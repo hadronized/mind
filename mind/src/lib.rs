@@ -65,6 +65,16 @@ impl Node {
     }
   }
 
+  pub fn set_name(&mut self, name: impl Into<String>) -> String {
+    let prev = self
+      .contents
+      .pop()
+      .map(|Text { text }| text)
+      .unwrap_or_default();
+    self.contents.push(Text { text: name.into() });
+    prev
+  }
+
   fn get_node_by_line_nb(&mut self, mut line: usize) -> (usize, Option<&mut Self>) {
     if line == 0 {
       return (0, Some(self));
