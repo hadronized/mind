@@ -23,6 +23,11 @@ impl Tree {
     let (_, node) = self.node.get_node_by_line_nb(line);
     node
   }
+
+  /// Get a [`Node`] by path, e.g. `/root/a/b/c/d`.
+  pub fn get_node_by_path<'a>(&self, path: impl IntoIterator<Item = &'a str>) -> Option<&Node> {
+    self.node.get_node_by_path(path.into_iter())
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -79,6 +84,28 @@ impl Node {
     }
 
     (line, None)
+  }
+
+  fn get_node_by_path<'a>(&self, mut path: impl Iterator<Item = &'a str>) -> Option<&Self> {
+    match path.next() {
+      None => Some(self),
+
+      Some(node_name) => {
+        // find the node in the children list, and if it doesn’t exist, it means the node we are looking for doesn’t exist;
+        // abord early
+        self
+          .children
+          .iter()
+          .find(|node| {
+            node
+              .contents
+              .first()
+              .map(|text| text.text == node_name)
+              .unwrap_or(false)
+          })?
+          .get_node_by_path(path)
+      }
+    }
   }
 }
 
@@ -180,6 +207,102 @@ mod tests {
     );
     assert_eq!(
       tree.get_node_by_line_nb(4).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "c".to_owned()
+      }])
+    );
+  }
+
+  #[test]
+  fn get_node_by_path_no_child() {
+    let tree = Tree {
+      version: Version::default(),
+      ty: 0,
+      node: Node::new_by_expand_state("foo", false, vec![]),
+    };
+
+    assert_eq!(tree.get_node_by_path([]), Some(&tree.node));
+    assert_eq!(tree.get_node_by_path(["test"]), None);
+
+    let tree = Tree {
+      version: Version::default(),
+      ty: 0,
+      node: Node::new_by_expand_state("foo", true, vec![]),
+    };
+
+    assert_eq!(tree.get_node_by_path([]), Some(&tree.node));
+    assert_eq!(tree.get_node_by_path(["test"]), None);
+  }
+
+  // this tests a couple of queries on this tree:
+  //
+  // root/       expanded     line:0
+  //   a/        collapsed    line:1
+  //     x/
+  //     y/
+  //   b/        expanded     line:2
+  //     z/
+  //   c/
+  #[test]
+  fn get_node_by_path_with_children() {
+    let tree = Tree {
+      version: Version::default(),
+      ty: 0,
+      node: Node::new_by_expand_state(
+        "root",
+        true,
+        vec![
+          Node::new_by_expand_state(
+            "a",
+            false,
+            vec![
+              Node::new_by_expand_state("x", false, vec![]),
+              Node::new_by_expand_state("y", false, vec![]),
+            ],
+          ),
+          Node::new_by_expand_state(
+            "b",
+            true,
+            vec![Node::new_by_expand_state("z", false, vec![])],
+          ),
+          Node::new_by_expand_state("c", false, vec![]),
+        ],
+      ),
+    };
+
+    assert_eq!(tree.get_node_by_path([]), Some(&tree.node));
+    assert_eq!(
+      tree.get_node_by_path(["a"]).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "a".to_owned()
+      }])
+    );
+    assert_eq!(
+      tree.get_node_by_path(["a", "x"]).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "x".to_owned()
+      }])
+    );
+    assert_eq!(
+      tree.get_node_by_path(["a", "y"]).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "y".to_owned()
+      }])
+    );
+    assert_eq!(
+      tree.get_node_by_path(["b"]).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "b".to_owned()
+      }])
+    );
+    assert_eq!(
+      tree.get_node_by_path(["b", "z"]).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "z".to_owned()
+      }])
+    );
+    assert_eq!(
+      tree.get_node_by_path(["c"]).map(|node| &node.contents),
       Some(&vec![Text {
         text: "c".to_owned()
       }])
