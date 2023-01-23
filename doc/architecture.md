@@ -12,7 +12,7 @@
 The `mind` crate exports symbols to work with **Mind** trees. It contains the fundamental data structures as well as the
 associated computations to execute on them.
 
-## `mind-term`
+## `mind-term`
 
 `mind-term` adds interaction via a terminal. It does so by implementing a TUI and a CLI (in case the user wants to use
 the data by composing it with other tools).
