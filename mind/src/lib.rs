@@ -19,13 +19,16 @@ impl Tree {
   /// Get a [`Node`] by line number.
   ///
   /// 0-indexed.
-  pub fn get_node_by_line_nb(&self, line: usize) -> Option<&Node> {
+  pub fn get_node_by_line_nb(&mut self, line: usize) -> Option<&mut Node> {
     let (_, node) = self.node.get_node_by_line_nb(line);
     node
   }
 
   /// Get a [`Node`] by path, e.g. `/root/a/b/c/d`.
-  pub fn get_node_by_path<'a>(&self, path: impl IntoIterator<Item = &'a str>) -> Option<&Node> {
+  pub fn get_node_by_path<'a>(
+    &mut self,
+    path: impl IntoIterator<Item = &'a str>,
+  ) -> Option<&mut Node> {
     self.node.get_node_by_path(path.into_iter())
   }
 }
@@ -62,7 +65,7 @@ impl Node {
     }
   }
 
-  fn get_node_by_line_nb(&self, mut line: usize) -> (usize, Option<&Self>) {
+  fn get_node_by_line_nb(&mut self, mut line: usize) -> (usize, Option<&mut Self>) {
     if line == 0 {
       return (0, Some(self));
     }
@@ -74,7 +77,7 @@ impl Node {
       return (line, None);
     }
 
-    for child in &self.children {
+    for child in &mut self.children {
       let (new_line, node) = child.get_node_by_line_nb(line);
       if node.is_some() {
         return (new_line, node);
@@ -86,7 +89,7 @@ impl Node {
     (line, None)
   }
 
-  fn get_node_by_path<'a>(&self, mut path: impl Iterator<Item = &'a str>) -> Option<&Self> {
+  fn get_node_by_path<'a>(&mut self, mut path: impl Iterator<Item = &'a str>) -> Option<&mut Self> {
     match path.next() {
       None => Some(self),
 
@@ -95,7 +98,7 @@ impl Node {
         // abord early
         self
           .children
-          .iter()
+          .iter_mut()
           .find(|node| {
             node
               .contents
@@ -129,23 +132,33 @@ mod tests {
 
   #[test]
   fn get_node_by_line_no_child() {
-    let tree = Tree {
+    let mut tree = Tree {
       version: Version::default(),
       ty: 0,
-      node: Node::new_by_expand_state("foo", false, vec![]),
+      node: Node::new_by_expand_state("root", false, vec![]),
     };
 
-    assert_eq!(tree.get_node_by_line_nb(0), Some(&tree.node));
+    assert_eq!(
+      tree.get_node_by_line_nb(0).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "root".to_owned()
+      }])
+    );
     assert_eq!(tree.get_node_by_line_nb(1), None);
     assert_eq!(tree.get_node_by_line_nb(2), None);
 
-    let tree = Tree {
+    let mut tree = Tree {
       version: Version::default(),
       ty: 0,
-      node: Node::new_by_expand_state("foo", true, vec![]),
+      node: Node::new_by_expand_state("root", true, vec![]),
     };
 
-    assert_eq!(tree.get_node_by_line_nb(0), Some(&tree.node));
+    assert_eq!(
+      tree.get_node_by_line_nb(0).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "root".to_owned()
+      }])
+    );
     assert_eq!(tree.get_node_by_line_nb(1), None);
     assert_eq!(tree.get_node_by_line_nb(2), None);
   }
@@ -161,7 +174,7 @@ mod tests {
   //   c/
   #[test]
   fn get_node_by_line_with_children() {
-    let tree = Tree {
+    let mut tree = Tree {
       version: Version::default(),
       ty: 0,
       node: Node::new_by_expand_state(
@@ -186,7 +199,12 @@ mod tests {
       ),
     };
 
-    assert_eq!(tree.get_node_by_line_nb(0), Some(&tree.node));
+    assert_eq!(
+      tree.get_node_by_line_nb(0).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "root".to_owned()
+      }])
+    );
     assert_eq!(
       tree.get_node_by_line_nb(1).map(|node| &node.contents),
       Some(&vec![Text {
@@ -215,22 +233,32 @@ mod tests {
 
   #[test]
   fn get_node_by_path_no_child() {
-    let tree = Tree {
+    let mut tree = Tree {
       version: Version::default(),
       ty: 0,
-      node: Node::new_by_expand_state("foo", false, vec![]),
+      node: Node::new_by_expand_state("root", false, vec![]),
     };
 
-    assert_eq!(tree.get_node_by_path([]), Some(&tree.node));
+    assert_eq!(
+      tree.get_node_by_line_nb(0).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "root".to_owned()
+      }])
+    );
     assert_eq!(tree.get_node_by_path(["test"]), None);
 
-    let tree = Tree {
+    let mut tree = Tree {
       version: Version::default(),
       ty: 0,
-      node: Node::new_by_expand_state("foo", true, vec![]),
+      node: Node::new_by_expand_state("root", true, vec![]),
     };
 
-    assert_eq!(tree.get_node_by_path([]), Some(&tree.node));
+    assert_eq!(
+      tree.get_node_by_line_nb(0).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "root".to_owned()
+      }])
+    );
     assert_eq!(tree.get_node_by_path(["test"]), None);
   }
 
@@ -245,7 +273,7 @@ mod tests {
   //   c/
   #[test]
   fn get_node_by_path_with_children() {
-    let tree = Tree {
+    let mut tree = Tree {
       version: Version::default(),
       ty: 0,
       node: Node::new_by_expand_state(
@@ -270,7 +298,12 @@ mod tests {
       ),
     };
 
-    assert_eq!(tree.get_node_by_path([]), Some(&tree.node));
+    assert_eq!(
+      tree.get_node_by_line_nb(0).map(|node| &node.contents),
+      Some(&vec![Text {
+        text: "root".to_owned()
+      }])
+    );
     assert_eq!(
       tree.get_node_by_path(["a"]).map(|node| &node.contents),
       Some(&vec![Text {
