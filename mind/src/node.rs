@@ -3,9 +3,9 @@
 use crate::encoding::{self, TreeType};
 use std::{
   cell::RefCell,
-  ops::{Deref, DerefMut},
   rc::{Rc, Weak},
 };
+use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct Tree {
@@ -15,6 +15,14 @@ pub struct Tree {
 }
 
 impl Tree {
+  pub fn new(name: impl Into<String>, icon: impl Into<String>) -> Self {
+    Self {
+      version: encoding::Version::current(),
+      ty: TreeType::Root,
+      node: Node::new(name.into(), icon.into(), false, None),
+    }
+  }
+
   pub fn from_encoding(tree: encoding::Tree) -> Self {
     Self {
       version: tree.version,
@@ -63,13 +71,18 @@ impl PartialEq for Node {
 }
 
 impl Node {
-  fn new(icon: String, is_expanded: bool, name: String, parent: Option<WeakNode>) -> Self {
+  fn new(
+    name: impl Into<String>,
+    icon: impl Into<String>,
+    is_expanded: bool,
+    parent: impl Into<Option<WeakNode>>,
+  ) -> Self {
     Self {
       inner: Rc::new(RefCell::new(NodeInner {
-        icon,
+        name: name.into(),
+        icon: icon.into(),
         is_expanded,
-        name,
-        parent,
+        parent: parent.into(),
         children: Vec::new(),
       })),
     }
@@ -81,32 +94,19 @@ impl Node {
     }
   }
 
-  #[cfg(test)]
-  fn new_by_expand_state(name: impl Into<String>, is_expanded: bool, children: Vec<Node>) -> Self {
-    Self {
-      inner: Rc::new(RefCell::new(NodeInner {
-        icon: String::new(),
-        is_expanded,
-        name: name.into(),
-        parent: None,
-        children,
-      })),
-    }
-  }
-
   pub fn from_encoding(node: encoding::Node) -> Self {
     Self::from_encoding_rec(None, node)
   }
 
   fn from_encoding_rec(parent: Option<WeakNode>, mut node: encoding::Node) -> Self {
     let current = Self::new(
-      node.icon,
-      node.is_expanded,
       node
         .contents
         .pop()
         .map(|text| text.text)
         .unwrap_or_default(),
+      node.icon,
+      node.is_expanded,
       parent,
     );
 
@@ -116,11 +116,11 @@ impl Node {
       .map(|node| Self::from_encoding_rec(Some(current.downgrade()), node))
       .collect();
 
-    current.borrow_mut().children = children;
+    current.inner.borrow_mut().children = children;
     current
   }
 
-  pub fn get_node_by_line(&self, mut line: usize) -> (usize, Option<Self>) {
+  fn get_node_by_line(&self, mut line: usize) -> (usize, Option<Self>) {
     let node = self.inner.borrow();
 
     if line == 0 {
@@ -158,56 +158,138 @@ impl Node {
         node
           .children
           .iter()
-          .find(|node| node.borrow().name == node_name)?
+          .find(|node| node.inner.borrow().name == node_name)?
           .get_node_by_path(path)
       }
     }
   }
-}
 
-impl Deref for Node {
-  type Target = Rc<RefCell<NodeInner>>;
+  /// Get the index of a [`Node`] in the node passed as argument, which must be its parent.
+  ///
+  /// If we don’t have any parent, returns `None`.
+  fn get_index(&self, parent: &Node) -> Result<usize, NodeError> {
+    for (i, child) in parent.inner.borrow().children.iter().enumerate() {
+      if self == child {
+        return Ok(i);
+      }
+    }
 
-  fn deref(&self) -> &Self::Target {
-    &self.inner
+    Err(NodeError::NotContainedInParent)
   }
-}
 
-impl DerefMut for Node {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.inner
+  #[cfg(test)]
+  fn get_index_from_parent(&self) -> Result<usize, NodeError> {
+    self
+      .parent()
+      .ok_or_else(|| NodeError::NoParent)
+      .and_then(|parent| self.get_index(&parent))
+  }
+
+  pub fn name(&self) -> String {
+    self.inner.borrow().name.to_owned()
+  }
+
+  pub fn set_name(&self, name: impl Into<String>) {
+    self.inner.borrow_mut().name = name.into();
+  }
+
+  pub fn icon(&self) -> String {
+    self.inner.borrow().icon.to_owned()
+  }
+
+  pub fn set_icon(&self, icon: impl Into<String>) {
+    self.inner.borrow_mut().icon = icon.into();
+  }
+
+  pub fn is_expanded(&self) -> bool {
+    self.inner.borrow().is_expanded
+  }
+
+  pub fn set_expanded(&self, is_expanded: bool) {
+    self.inner.borrow_mut().is_expanded = is_expanded;
+  }
+
+  pub fn parent(&self) -> Option<Node> {
+    self
+      .inner
+      .borrow()
+      .parent
+      .as_ref()
+      .and_then(WeakNode::upgrade)
+  }
+
+  pub fn insert_top(&self, node: Node) {
+    node.inner.borrow_mut().parent = Some(self.downgrade());
+    let _ = self.inner.borrow_mut().children.insert(0, node);
+  }
+
+  pub fn insert_bottom(&self, node: Node) {
+    node.inner.borrow_mut().parent = Some(self.downgrade());
+    let _ = self.inner.borrow_mut().children.push(node);
+  }
+
+  pub fn insert_before(&self, node: Node) -> Result<(), NodeError> {
+    let parent = self.parent().ok_or_else(|| NodeError::NoParent)?;
+    let i = self.get_index(&parent)?;
+
+    node.inner.borrow_mut().parent = Some(parent.downgrade());
+    let _ = parent.inner.borrow_mut().children.insert(i, node);
+    Ok(())
+  }
+
+  pub fn insert_after(&self, node: Node) -> Result<(), NodeError> {
+    let parent = self.parent().ok_or_else(|| NodeError::NoParent)?;
+    let i = self.get_index(&parent)? + 1;
+
+    node.inner.borrow_mut().parent = Some(parent.downgrade());
+    let _ = parent.inner.borrow_mut().children.insert(i, node);
+    Ok(())
+  }
+
+  pub fn toggle_expand(&self) {
+    let mut node = self.inner.borrow_mut();
+    node.is_expanded = !node.is_expanded;
   }
 }
 
 #[derive(Clone, Debug)]
 pub struct NodeInner {
+  name: String,
   icon: String,
   is_expanded: bool,
-  name: String,
   parent: Option<WeakNode>,
   children: Vec<Node>,
+}
+
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum NodeError {
+  #[error("cannot insert; no parent")]
+  NoParent,
+
+  #[error("the node is not contained in its supposed parent")]
+  NotContainedInParent,
 }
 
 #[cfg(test)]
 mod tests {
   use crate::{
-    encoding::{TreeType, Version},
+    encoding::{self, TreeType, Version},
     node::{Node, Tree},
   };
 
   #[test]
   fn get_node_by_line_no_child() {
-    let tree = Tree {
+    let tree = Tree::from_encoding(encoding::Tree {
       version: Version::default(),
       ty: TreeType::Root,
-      node: Node::new_by_expand_state("root", false, vec![]),
-    };
+      node: encoding::Node::new_by_expand_state("root", false, vec![]),
+    });
 
     assert_eq!(
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -215,17 +297,17 @@ mod tests {
     assert_eq!(tree.get_node_by_line(1), None);
     assert_eq!(tree.get_node_by_line(2), None);
 
-    let tree = Tree {
+    let tree = Tree::from_encoding(encoding::Tree {
       version: Version::default(),
       ty: TreeType::Root,
-      node: Node::new_by_expand_state("root", true, vec![]),
-    };
+      node: encoding::Node::new_by_expand_state("root", true, vec![]),
+    });
 
     assert_eq!(
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -234,7 +316,7 @@ mod tests {
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -254,36 +336,36 @@ mod tests {
   //   c/
   #[test]
   fn get_node_by_line_with_children() {
-    let tree = Tree {
+    let tree = Tree::from_encoding(encoding::Tree {
       version: Version::default(),
       ty: TreeType::Root,
-      node: Node::new_by_expand_state(
+      node: encoding::Node::new_by_expand_state(
         "root",
         true,
         vec![
-          Node::new_by_expand_state(
+          encoding::Node::new_by_expand_state(
             "a",
             false,
             vec![
-              Node::new_by_expand_state("x", false, vec![]),
-              Node::new_by_expand_state("y", false, vec![]),
+              encoding::Node::new_by_expand_state("x", false, vec![]),
+              encoding::Node::new_by_expand_state("y", false, vec![]),
             ],
           ),
-          Node::new_by_expand_state(
+          encoding::Node::new_by_expand_state(
             "b",
             true,
-            vec![Node::new_by_expand_state("z", false, vec![])],
+            vec![encoding::Node::new_by_expand_state("z", false, vec![])],
           ),
-          Node::new_by_expand_state("c", false, vec![]),
+          encoding::Node::new_by_expand_state("c", false, vec![]),
         ],
       ),
-    };
+    });
 
     assert_eq!(
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -292,7 +374,7 @@ mod tests {
       tree
         .get_node_by_line(1)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("a")
@@ -301,7 +383,7 @@ mod tests {
       tree
         .get_node_by_line(2)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("b")
@@ -310,7 +392,7 @@ mod tests {
       tree
         .get_node_by_line(3)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("z")
@@ -319,7 +401,7 @@ mod tests {
       tree
         .get_node_by_line(4)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("c")
@@ -328,34 +410,34 @@ mod tests {
 
   #[test]
   fn get_node_by_path_no_child() {
-    let tree = Tree {
+    let tree = Tree::from_encoding(encoding::Tree {
       version: Version::default(),
       ty: TreeType::Root,
-      node: Node::new_by_expand_state("root", false, vec![]),
-    };
+      node: encoding::Node::new_by_expand_state("root", false, vec![]),
+    });
 
     assert_eq!(
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
     );
     assert_eq!(tree.get_node_by_path(["test"]), None);
 
-    let tree = Tree {
+    let tree = Tree::from_encoding(encoding::Tree {
       version: Version::default(),
       ty: TreeType::Root,
-      node: Node::new_by_expand_state("root", true, vec![]),
-    };
+      node: encoding::Node::new_by_expand_state("root", true, vec![]),
+    });
 
     assert_eq!(
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -374,36 +456,36 @@ mod tests {
   //   c/
   #[test]
   fn get_node_by_path_with_children() {
-    let tree = Tree {
+    let tree = Tree::from_encoding(encoding::Tree {
       version: Version::default(),
       ty: TreeType::Root,
-      node: Node::new_by_expand_state(
+      node: encoding::Node::new_by_expand_state(
         "root",
         true,
         vec![
-          Node::new_by_expand_state(
+          encoding::Node::new_by_expand_state(
             "a",
             false,
             vec![
-              Node::new_by_expand_state("x", false, vec![]),
-              Node::new_by_expand_state("y", false, vec![]),
+              encoding::Node::new_by_expand_state("x", false, vec![]),
+              encoding::Node::new_by_expand_state("y", false, vec![]),
             ],
           ),
-          Node::new_by_expand_state(
+          encoding::Node::new_by_expand_state(
             "b",
             true,
-            vec![Node::new_by_expand_state("z", false, vec![])],
+            vec![encoding::Node::new_by_expand_state("z", false, vec![])],
           ),
-          Node::new_by_expand_state("c", false, vec![]),
+          encoding::Node::new_by_expand_state("c", false, vec![]),
         ],
       ),
-    };
+    });
 
     assert_eq!(
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -412,7 +494,7 @@ mod tests {
       tree
         .get_node_by_path(["a"])
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("a")
@@ -421,7 +503,7 @@ mod tests {
       tree
         .get_node_by_path(["a", "x"])
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("x")
@@ -430,7 +512,7 @@ mod tests {
       tree
         .get_node_by_path(["a", "y"])
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("y")
@@ -439,7 +521,7 @@ mod tests {
       tree
         .get_node_by_path(["b"])
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("b")
@@ -448,7 +530,7 @@ mod tests {
       tree
         .get_node_by_path(["b", "z"])
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("z")
@@ -457,10 +539,135 @@ mod tests {
       tree
         .get_node_by_path(["c"])
         .as_ref()
-        .map(|node| node.borrow())
+        .map(|node| node.inner.borrow())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("c")
+    );
+  }
+
+  #[test]
+  fn get_index_from_parent() {
+    let tree = Tree::from_encoding(encoding::Tree {
+      version: Version::default(),
+      ty: TreeType::Root,
+      node: encoding::Node::new_by_expand_state(
+        "root",
+        true,
+        vec![
+          encoding::Node::new_by_expand_state(
+            "a",
+            false,
+            vec![
+              encoding::Node::new_by_expand_state("x", false, vec![]),
+              encoding::Node::new_by_expand_state("y", false, vec![]),
+            ],
+          ),
+          encoding::Node::new_by_expand_state(
+            "b",
+            true,
+            vec![encoding::Node::new_by_expand_state("z", false, vec![])],
+          ),
+          encoding::Node::new_by_expand_state("c", false, vec![]),
+        ],
+      ),
+    });
+
+    assert_eq!(
+      tree
+        .get_node_by_path(["a", "x"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(0)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["a", "y"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(1)
+    );
+  }
+
+  #[test]
+  fn insert() {
+    let tree = Tree::new("root", "");
+    let node = tree.get_node_by_line(0).unwrap();
+
+    node.insert_bottom(Node::new("x", "", false, None));
+    node.insert_bottom(Node::new("y", "", false, None));
+    node.insert_bottom(Node::new("z", "", false, None));
+    node.insert_top(Node::new("c", "", false, None));
+    node.insert_top(Node::new("b", "", false, None));
+    node.insert_top(Node::new("a", "", false, None));
+
+    tree
+      .get_node_by_path(["c"])
+      .unwrap()
+      .insert_after(Node::new("d", "", false, None))
+      .unwrap();
+
+    tree
+      .get_node_by_path(["x"])
+      .unwrap()
+      .insert_before(Node::new("w", "", false, None))
+      .unwrap();
+
+    assert_eq!(
+      tree
+        .get_node_by_path(["a"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(0)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["b"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(1)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["c"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(2)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["d"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(3)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["w"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(4)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["x"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(5)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["y"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(6)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["z"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(7)
     );
   }
 }

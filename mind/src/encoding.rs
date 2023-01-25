@@ -66,12 +66,34 @@ pub struct Node {
   pub(crate) children: Vec<Node>,
 }
 
+impl Node {
+  #[cfg(test)]
+  pub(crate) fn new_by_expand_state(
+    name: impl Into<String>,
+    is_expanded: bool,
+    children: Vec<Node>,
+  ) -> Self {
+    Self {
+      icon: String::new(),
+      is_expanded,
+      contents: vec![Text { text: name.into() }],
+      children,
+    }
+  }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Version(u16);
 
+impl Version {
+  pub const fn current() -> Self {
+    Version(1)
+  }
+}
+
 impl Default for Version {
   fn default() -> Self {
-    Version(1)
+    Version::current()
   }
 }
 
