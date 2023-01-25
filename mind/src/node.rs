@@ -4,10 +4,10 @@ use crate::encoding::{self, TreeType};
 use std::{
   cell::RefCell,
   ops::{Deref, DerefMut},
-  rc::Rc,
+  rc::{Rc, Weak},
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Tree {
   version: encoding::Version,
   ty: TreeType,
@@ -37,13 +37,33 @@ impl Tree {
   }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Weak version of [`Node`], mainly for parent nodes.
+///
+/// Not supposed to be used as-is; convert to [`Node`] when needed.
+#[derive(Clone, Debug)]
+pub struct WeakNode {
+  inner: Weak<RefCell<NodeInner>>,
+}
+
+impl WeakNode {
+  fn upgrade(&self) -> Option<Node> {
+    self.inner.upgrade().map(|inner| Node { inner })
+  }
+}
+
+#[derive(Clone, Debug)]
 pub struct Node {
   inner: Rc<RefCell<NodeInner>>,
 }
 
+impl PartialEq for Node {
+  fn eq(&self, other: &Self) -> bool {
+    self.inner.as_ptr().eq(&other.inner.as_ptr())
+  }
+}
+
 impl Node {
-  fn new(icon: String, is_expanded: bool, name: String, parent: Option<Node>) -> Self {
+  fn new(icon: String, is_expanded: bool, name: String, parent: Option<WeakNode>) -> Self {
     Self {
       inner: Rc::new(RefCell::new(NodeInner {
         icon,
@@ -52,6 +72,12 @@ impl Node {
         parent,
         children: Vec::new(),
       })),
+    }
+  }
+
+  fn downgrade(&self) -> WeakNode {
+    WeakNode {
+      inner: Rc::downgrade(&self.inner),
     }
   }
 
@@ -72,7 +98,7 @@ impl Node {
     Self::from_encoding_rec(None, node)
   }
 
-  fn from_encoding_rec(parent: Option<Node>, mut node: encoding::Node) -> Self {
+  fn from_encoding_rec(parent: Option<WeakNode>, mut node: encoding::Node) -> Self {
     let current = Self::new(
       node.icon,
       node.is_expanded,
@@ -87,7 +113,7 @@ impl Node {
     let children = node
       .children
       .into_iter()
-      .map(|node| Self::from_encoding_rec(Some(current.clone()), node))
+      .map(|node| Self::from_encoding_rec(Some(current.downgrade()), node))
       .collect();
 
     current.borrow_mut().children = children;
@@ -153,12 +179,12 @@ impl DerefMut for Node {
   }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct NodeInner {
   icon: String,
   is_expanded: bool,
   name: String,
-  parent: Option<Node>,
+  parent: Option<WeakNode>,
   children: Vec<Node>,
 }
 
