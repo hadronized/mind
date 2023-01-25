@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 mind = { path = "../mind", version = "0.1" }
 serde_json = "1"
+structopt = "0.3.26"
