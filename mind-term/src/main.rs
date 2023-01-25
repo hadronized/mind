@@ -1,3 +1,8 @@
+use mind::encoding::Node;
+use std::io::stdin;
+
 fn main() {
-  println!("Hello, world!");
+  let node: Result<Node, _> = serde_json::from_reader(stdin());
+
+  println!("{node:#?}");
 }
