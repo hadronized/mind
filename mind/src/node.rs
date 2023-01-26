@@ -19,7 +19,7 @@ impl Tree {
     Self {
       version: encoding::Version::current(),
       ty: TreeType::Root,
-      node: Node::new(name.into(), icon.into(), false, None),
+      node: Node::new_raw(name.into(), icon.into(), false, None),
     }
   }
 
@@ -71,18 +71,17 @@ impl PartialEq for Node {
 }
 
 impl Node {
-  fn new(
-    name: impl Into<String>,
-    icon: impl Into<String>,
-    is_expanded: bool,
-    parent: impl Into<Option<WeakNode>>,
-  ) -> Self {
+  pub fn new(name: impl Into<String>, icon: impl Into<String>) -> Self {
+    Self::new_raw(name.into(), icon.into(), false, None)
+  }
+
+  fn new_raw(name: String, icon: String, is_expanded: bool, parent: Option<WeakNode>) -> Self {
     Self {
       inner: Rc::new(RefCell::new(NodeInner {
-        name: name.into(),
-        icon: icon.into(),
+        name,
+        icon,
         is_expanded,
-        parent: parent.into(),
+        parent,
         children: Vec::new(),
       })),
     }
@@ -99,7 +98,7 @@ impl Node {
   }
 
   fn from_encoding_rec(parent: Option<WeakNode>, mut node: encoding::Node) -> Self {
-    let current = Self::new(
+    let current = Self::new_raw(
       node
         .contents
         .pop()
@@ -594,23 +593,23 @@ mod tests {
     let tree = Tree::new("root", "");
     let node = tree.get_node_by_line(0).unwrap();
 
-    node.insert_bottom(Node::new("x", "", false, None));
-    node.insert_bottom(Node::new("y", "", false, None));
-    node.insert_bottom(Node::new("z", "", false, None));
-    node.insert_top(Node::new("c", "", false, None));
-    node.insert_top(Node::new("b", "", false, None));
-    node.insert_top(Node::new("a", "", false, None));
+    node.insert_bottom(Node::new("x", ""));
+    node.insert_bottom(Node::new("y", ""));
+    node.insert_bottom(Node::new("z", ""));
+    node.insert_top(Node::new("c", ""));
+    node.insert_top(Node::new("b", ""));
+    node.insert_top(Node::new("a", ""));
 
     tree
       .get_node_by_path(["c"])
       .unwrap()
-      .insert_after(Node::new("d", "", false, None))
+      .insert_after(Node::new("d", ""))
       .unwrap();
 
     tree
       .get_node_by_path(["x"])
       .unwrap()
-      .insert_before(Node::new("w", "", false, None))
+      .insert_before(Node::new("w", ""))
       .unwrap();
 
     assert_eq!(
