@@ -49,7 +49,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
       remove(base_sel)?;
     }
 
-    Command::Rename { ref name } => {
+    Command::Rename { name } => {
       let name = name.join(" ");
       rename(base_sel, name)?;
     }
@@ -79,6 +79,6 @@ fn remove(base_sel: Node) -> Result<(), PutainDeMerdeError> {
 }
 
 /// Rename a node.
-fn rename(base_sel: Node, name: impl Into<String>) -> Result<(), PutainDeMerdeError> {
+fn rename(base_sel: Node, name: impl AsRef<str>) -> Result<(), PutainDeMerdeError> {
   Ok(base_sel.set_name(name)?)
 }

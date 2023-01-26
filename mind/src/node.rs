@@ -15,11 +15,11 @@ pub struct Tree {
 }
 
 impl Tree {
-  pub fn new(name: impl Into<String>, icon: impl Into<String>) -> Self {
+  pub fn new(name: impl AsRef<str>, icon: impl AsRef<str>) -> Self {
     Self {
       version: encoding::Version::current(),
       ty: TreeType::Root,
-      node: Node::new_raw(name.into(), icon.into(), false, None),
+      node: Node::new(name, icon),
     }
   }
 
@@ -71,11 +71,14 @@ impl PartialEq for Node {
 }
 
 impl Node {
-  pub fn new(name: impl Into<String>, icon: impl Into<String>) -> Self {
-    Self::new_raw(name.into(), icon.into(), false, None)
+  pub fn new(name: impl AsRef<str>, icon: impl AsRef<str>) -> Self {
+    Self::new_raw(name.as_ref(), icon.as_ref(), false, None)
   }
 
-  fn new_raw(name: String, icon: String, is_expanded: bool, parent: Option<WeakNode>) -> Self {
+  fn new_raw(name: &str, icon: &str, is_expanded: bool, parent: Option<WeakNode>) -> Self {
+    let name = name.trim().to_owned();
+    let icon = icon.trim().to_owned();
+
     Self {
       inner: Rc::new(RefCell::new(NodeInner {
         name,
@@ -99,12 +102,12 @@ impl Node {
 
   fn from_encoding_rec(parent: Option<WeakNode>, mut node: encoding::Node) -> Self {
     let current = Self::new_raw(
-      node
+      &node
         .contents
         .pop()
         .map(|text| text.text)
         .unwrap_or_default(),
-      node.icon,
+      &node.icon,
       node.is_expanded,
       parent,
     );
@@ -185,8 +188,8 @@ impl Node {
     self.inner.borrow().name.to_owned()
   }
 
-  pub fn set_name(&self, name: impl Into<String>) -> Result<(), NodeError> {
-    let name = name.into();
+  pub fn set_name(&self, name: impl AsRef<str>) -> Result<(), NodeError> {
+    let name = name.as_ref().trim().to_owned();
 
     if name.is_empty() {
       return Err(NodeError::EmptyName);
