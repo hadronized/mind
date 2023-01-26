@@ -1,15 +1,15 @@
 mod cli;
 
+use clap::Parser;
 use cli::{Command, InsertMode, CLI};
 use mind::node::{Node, NodeError};
 use mind::{encoding, node::Tree};
 use std::error::Error as StdError;
 use std::fs;
-use structopt::StructOpt;
 use thiserror::Error;
 
 fn main() -> Result<(), Box<dyn StdError>> {
-  let config = CLI::from_args();
+  let config = CLI::parse();
 
   // run on a specific Mind tree
   if let Some(ref path) = config.path {

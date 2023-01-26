@@ -1,28 +1,27 @@
-use std::{fmt::Display, path::PathBuf, str::FromStr};
-use structopt::StructOpt;
+use clap::{Parser, Subcommand, ValueEnum};
+use std::{fmt::Display, path::PathBuf};
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct CLI {
   /// Path to a Mind tree.
-  #[structopt(short, long)]
+  #[arg(short, long)]
   pub path: Option<PathBuf>,
 
   /// Select a base node to operate on.
-  #[structopt(short = "s", long = "sel")]
+  #[arg(short = 's', long)]
   pub base_sel: Option<String>,
 
-  #[structopt(subcommand)]
+  #[command(subcommand)]
   pub cmd: Command,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Subcommand)]
 pub enum Command {
   /// Insert a new node.
   ///
   /// This command requires a base selection.
-  #[structopt(aliases = &["ins"])]
   Insert {
-    #[structopt(default_value, short)]
+    #[arg(default_value_t, short, value_enum)]
     mode: InsertMode,
 
     /// Name of the node to create.
@@ -30,13 +29,15 @@ pub enum Command {
   },
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum InsertMode {
   /// Insert the node inside the selected node, at the top.
+  #[value(name = "top")]
   InsideTop,
 
   /// Insert the node inside the selected node, at the bottom.
   #[default]
+  #[value(name = "bottom")]
   InsideBottom,
 
   /// Insert the node as a sibling, just before the selected node (if the selected has a parent).
@@ -53,29 +54,6 @@ impl Display for InsertMode {
       InsertMode::InsideBottom => f.write_str("bottom"),
       InsertMode::Before => f.write_str("before"),
       InsertMode::After => f.write_str("after"),
-    }
-  }
-}
-
-#[derive(Debug)]
-pub struct InsertModeParseError;
-
-impl Display for InsertModeParseError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_str("FOCK")
-  }
-}
-
-impl FromStr for InsertMode {
-  type Err = InsertModeParseError;
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    match s {
-      "top" => Ok(InsertMode::InsideTop),
-      "bottom" => Ok(InsertMode::InsideBottom),
-      "before" => Ok(InsertMode::Before),
-      "after" => Ok(InsertMode::After),
-      _ => Err(InsertModeParseError),
     }
   }
 }
