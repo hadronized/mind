@@ -245,6 +245,19 @@ impl Node {
     Ok(())
   }
 
+  pub fn delete(&self, node: Node) -> Result<(), NodeError> {
+    let mut inner = self.inner.borrow_mut();
+    let i = inner
+      .children
+      .iter()
+      .enumerate()
+      .find_map(|(i, n)| if n == &node { Some(i) } else { None })
+      .ok_or(NodeError::NotContainedInParent)?;
+
+    let _ = inner.children.remove(i);
+    Ok(())
+  }
+
   pub fn toggle_expand(&self) {
     let mut node = self.inner.borrow_mut();
     node.is_expanded = !node.is_expanded;
@@ -668,5 +681,24 @@ mod tests {
         .get_index_from_parent(),
       Ok(7)
     );
+  }
+
+  #[test]
+  fn delete() {
+    let tree = Tree::new("root", "");
+    let node = tree.get_node_by_line(0).unwrap();
+
+    node.insert_bottom(Node::new("x", ""));
+    node.insert_bottom(Node::new("y", ""));
+
+    let x = tree.get_node_by_path(["x"]).unwrap();
+    x.insert_bottom(Node::new("a", ""));
+    x.insert_bottom(Node::new("b", ""));
+    x.insert_bottom(Node::new("c", ""));
+
+    let b = tree.get_node_by_path(["x", "b"]).unwrap();
+    x.delete(b).unwrap();
+
+    assert_eq!(tree.get_node_by_path(["x", "b"]), None);
   }
 }
