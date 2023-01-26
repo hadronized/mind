@@ -185,8 +185,15 @@ impl Node {
     self.inner.borrow().name.to_owned()
   }
 
-  pub fn set_name(&self, name: impl Into<String>) {
-    self.inner.borrow_mut().name = name.into();
+  pub fn set_name(&self, name: impl Into<String>) -> Result<(), NodeError> {
+    let name = name.into();
+
+    if name.is_empty() {
+      return Err(NodeError::EmptyName);
+    }
+
+    self.inner.borrow_mut().name = name;
+    Ok(())
   }
 
   pub fn icon(&self) -> String {
@@ -278,6 +285,9 @@ pub enum NodeError {
 
   #[error("the node is not contained in its supposed parent")]
   NotContainedInParent,
+
+  #[error("cannot set name; name cannot be empty")]
+  EmptyName,
 }
 
 #[cfg(test)]

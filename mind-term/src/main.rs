@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
   if let Some(ref path) = cli.path {
     let tree: encoding::Tree = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let tree = Tree::from_encoding(tree);
-    with_tree(&cli, tree)?;
+    with_tree(cli, tree)?;
   }
 
   Ok(())
@@ -30,22 +30,28 @@ pub enum PutainDeMerdeError {
   NodeOperation(#[from] NodeError),
 }
 
-fn with_tree(cli: &CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
-  let base_sel = cli.base_sel.as_ref().and_then(|base_sel| {
-    tree.get_node_by_path(base_sel.split('/').filter(|frag| !frag.trim().is_empty()))
-  });
+fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
+  let base_sel = cli
+    .base_sel
+    .as_ref()
+    .and_then(|base_sel| {
+      tree.get_node_by_path(base_sel.split('/').filter(|frag| !frag.trim().is_empty()))
+    })
+    .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
   match cli.cmd {
-    Command::Insert { mode, ref name } => {
-      let base_sel = base_sel.ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+    Command::Insert { mode, name } => {
       let name = name.join(" ");
-
       insert(&base_sel, Node::new(name, ""), mode)?;
     }
 
     Command::Remove => {
-      let base_sel = base_sel.ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       remove(base_sel)?;
+    }
+
+    Command::Rename { ref name } => {
+      let name = name.join(" ");
+      rename(base_sel, name)?;
     }
   }
 
@@ -70,4 +76,9 @@ fn insert(base_sel: &Node, node: Node, mode: InsertMode) -> Result<(), PutainDeM
 fn remove(base_sel: Node) -> Result<(), PutainDeMerdeError> {
   let parent = base_sel.parent()?;
   Ok(parent.delete(base_sel)?)
+}
+
+/// Rename a node.
+fn rename(base_sel: Node, name: impl Into<String>) -> Result<(), PutainDeMerdeError> {
+  Ok(base_sel.set_name(name)?)
 }

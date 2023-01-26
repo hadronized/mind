@@ -34,6 +34,14 @@ pub enum Command {
   /// This command requires a base selection.
   #[command(alias = "rm")]
   Remove,
+
+  /// Rename a node.
+  ///
+  /// This command requires a base selection.
+  Rename {
+    /// New name of the node.
+    name: Vec<String>,
+  },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
