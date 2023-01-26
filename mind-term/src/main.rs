@@ -42,6 +42,11 @@ fn with_tree(cli: &CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
 
       insert(&base_sel, Node::new(name, ""), mode)?;
     }
+
+    Command::Remove => {
+      let base_sel = base_sel.ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      remove(base_sel)?;
+    }
   }
 
   println!("{tree:#?}");
@@ -62,7 +67,7 @@ fn insert(base_sel: &Node, node: Node, mode: InsertMode) -> Result<(), PutainDeM
 }
 
 /// Delete a node.
-fn delete(base_sel: Node) -> Result<(), PutainDeMerdeError> {
+fn remove(base_sel: Node) -> Result<(), PutainDeMerdeError> {
   let parent = base_sel.parent()?;
   Ok(parent.delete(base_sel)?)
 }

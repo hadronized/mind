@@ -28,6 +28,12 @@ pub enum Command {
     /// Name of the node to create.
     name: Vec<String>,
   },
+
+  /// Remove a node
+  ///
+  /// This command requires a base selection.
+  #[command(alias = "rm")]
+  Remove,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
