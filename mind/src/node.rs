@@ -267,6 +267,38 @@ impl Node {
     Ok(())
   }
 
+  pub fn move_top(&self, node: Node) -> Result<(), NodeError> {
+    let parent = node.parent()?;
+
+    parent.delete(node.clone())?;
+    self.insert_top(node);
+    Ok(())
+  }
+
+  pub fn move_bottom(&self, node: Node) -> Result<(), NodeError> {
+    let parent = node.parent()?;
+
+    parent.delete(node.clone())?;
+    self.insert_bottom(node);
+    Ok(())
+  }
+
+  pub fn move_before(&self, node: Node) -> Result<(), NodeError> {
+    let parent = node.parent()?;
+
+    parent.delete(node.clone())?;
+    self.insert_before(node)?;
+    Ok(())
+  }
+
+  pub fn move_after(&self, node: Node) -> Result<(), NodeError> {
+    let parent = node.parent()?;
+
+    parent.delete(node.clone())?;
+    self.insert_after(node)?;
+    Ok(())
+  }
+
   pub fn toggle_expand(&self) {
     let mut node = self.inner.borrow_mut();
     node.is_expanded = !node.is_expanded;
@@ -712,5 +744,67 @@ mod tests {
     x.delete(b).unwrap();
 
     assert_eq!(tree.get_node_by_path(["x", "b"]), None);
+  }
+
+  #[test]
+  fn select_move() {
+    let tree = Tree::new("root", "");
+    let node = tree.get_node_by_line(0).unwrap();
+
+    node.insert_bottom(Node::new("x", ""));
+    node.insert_bottom(Node::new("y", ""));
+    node.insert_bottom(Node::new("z", ""));
+    node.insert_top(Node::new("c", ""));
+    node.insert_top(Node::new("b", ""));
+    node.insert_top(Node::new("a", ""));
+
+    let a = tree.get_node_by_path(["a"]).unwrap();
+    let b = tree.get_node_by_path(["b"]).unwrap();
+    let c = tree.get_node_by_path(["c"]).unwrap();
+    let x = tree.get_node_by_path(["x"]).unwrap();
+    let y = tree.get_node_by_path(["y"]).unwrap();
+    let z = tree.get_node_by_path(["z"]).unwrap();
+
+    a.move_bottom(x.clone()).unwrap();
+    a.move_top(y).unwrap();
+    x.move_after(z.clone()).unwrap();
+    z.move_before(b).unwrap();
+    node.move_bottom(c).unwrap();
+
+    assert_eq!(
+      tree
+        .get_node_by_path(["a", "y"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(0)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["a", "x"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(1)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["a", "b"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(2)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["a", "z"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(3)
+    );
+    assert_eq!(
+      tree
+        .get_node_by_path(["c"])
+        .unwrap()
+        .get_index_from_parent(),
+      Ok(1)
+    );
   }
 }
