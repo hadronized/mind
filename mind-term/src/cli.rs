@@ -20,6 +20,7 @@ pub enum Command {
   /// Insert a new node.
   ///
   /// This command requires a base selection.
+  #[command(alias = "ins")]
   Insert {
     #[arg(default_value_t, short, value_enum)]
     mode: InsertMode,
