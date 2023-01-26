@@ -9,13 +9,13 @@ use std::fs;
 use thiserror::Error;
 
 fn main() -> Result<(), Box<dyn StdError>> {
-  let config = CLI::parse();
+  let cli = CLI::parse();
 
   // run on a specific Mind tree
-  if let Some(ref path) = config.path {
+  if let Some(ref path) = cli.path {
     let tree: encoding::Tree = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let tree = Tree::from_encoding(tree);
-    with_tree(&config, tree)?;
+    with_tree(&cli, tree)?;
   }
 
   Ok(())
@@ -30,12 +30,12 @@ pub enum PutainDeMerdeError {
   NodeOperation(#[from] NodeError),
 }
 
-fn with_tree(config: &CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
-  let base_sel = config.base_sel.as_ref().and_then(|base_sel| {
+fn with_tree(cli: &CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
+  let base_sel = cli.base_sel.as_ref().and_then(|base_sel| {
     tree.get_node_by_path(base_sel.split('/').filter(|frag| !frag.trim().is_empty()))
   });
 
-  match config.cmd {
+  match cli.cmd {
     Command::Insert { mode, ref name } => {
       let base_sel = base_sel.ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let name = name.join(" ");
@@ -59,4 +59,10 @@ fn insert(base_sel: &Node, node: Node, mode: InsertMode) -> Result<(), PutainDeM
   }
 
   Ok(())
+}
+
+/// Delete a node.
+fn delete(base_sel: Node) -> Result<(), PutainDeMerdeError> {
+  let parent = base_sel.parent()?;
+  Ok(parent.delete(base_sel)?)
 }

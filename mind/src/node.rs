@@ -178,10 +178,7 @@ impl Node {
 
   #[cfg(test)]
   fn get_index_from_parent(&self) -> Result<usize, NodeError> {
-    self
-      .parent()
-      .ok_or_else(|| NodeError::NoParent)
-      .and_then(|parent| self.get_index(&parent))
+    self.parent().and_then(|parent| self.get_index(&parent))
   }
 
   pub fn name(&self) -> String {
@@ -208,13 +205,14 @@ impl Node {
     self.inner.borrow_mut().is_expanded = is_expanded;
   }
 
-  pub fn parent(&self) -> Option<Node> {
+  pub fn parent(&self) -> Result<Node, NodeError> {
     self
       .inner
       .borrow()
       .parent
       .as_ref()
       .and_then(WeakNode::upgrade)
+      .ok_or(NodeError::NoParent)
   }
 
   pub fn insert_top(&self, node: Node) {
@@ -228,7 +226,7 @@ impl Node {
   }
 
   pub fn insert_before(&self, node: Node) -> Result<(), NodeError> {
-    let parent = self.parent().ok_or_else(|| NodeError::NoParent)?;
+    let parent = self.parent()?;
     let i = self.get_index(&parent)?;
 
     node.inner.borrow_mut().parent = Some(parent.downgrade());
@@ -237,7 +235,7 @@ impl Node {
   }
 
   pub fn insert_after(&self, node: Node) -> Result<(), NodeError> {
-    let parent = self.parent().ok_or_else(|| NodeError::NoParent)?;
+    let parent = self.parent()?;
     let i = self.get_index(&parent)? + 1;
 
     node.inner.borrow_mut().parent = Some(parent.downgrade());
