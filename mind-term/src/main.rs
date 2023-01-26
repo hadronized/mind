@@ -53,6 +53,11 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
       let name = name.join(" ");
       rename(base_sel, name)?;
     }
+
+    Command::Icon { icon } => {
+      let icon = icon.join(" ");
+      change_icon(base_sel, icon);
+    }
   }
 
   println!("{tree:#?}");
@@ -81,4 +86,9 @@ fn remove(base_sel: Node) -> Result<(), PutainDeMerdeError> {
 /// Rename a node.
 fn rename(base_sel: Node, name: impl AsRef<str>) -> Result<(), PutainDeMerdeError> {
   Ok(base_sel.set_name(name)?)
+}
+
+/// Change the icon of a node
+fn change_icon(base_sel: Node, icon: impl AsRef<str>) {
+  base_sel.set_icon(icon);
 }
