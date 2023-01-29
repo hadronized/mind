@@ -1,17 +1,31 @@
 //! Node operations
 
 use crate::encoding::{self, TreeType};
+use serde::{Deserialize, Serialize};
 use std::{
   cell::RefCell,
   rc::{Rc, Weak},
 };
 use thiserror::Error;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(from = "encoding::Tree", into = "encoding::Tree")]
 pub struct Tree {
   version: encoding::Version,
   ty: TreeType,
   node: Node,
+}
+
+impl From<encoding::Tree> for Tree {
+  fn from(value: encoding::Tree) -> Self {
+    Self::from_encoding(value)
+  }
+}
+
+impl From<Tree> for encoding::Tree {
+  fn from(value: Tree) -> Self {
+    value.into_encoding()
+  }
 }
 
 impl Tree {
@@ -28,6 +42,14 @@ impl Tree {
       version: tree.version,
       ty: tree.ty,
       node: Node::from_encoding(tree.node),
+    }
+  }
+
+  pub fn into_encoding(&self) -> encoding::Tree {
+    encoding::Tree {
+      version: self.version,
+      ty: self.ty,
+      node: self.node.into_encoding(),
     }
   }
 
@@ -59,7 +81,8 @@ impl WeakNode {
   }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(from = "encoding::Node", into = "encoding::Node")]
 pub struct Node {
   inner: Rc<RefCell<NodeInner>>,
 }
@@ -67,6 +90,18 @@ pub struct Node {
 impl PartialEq for Node {
   fn eq(&self, other: &Self) -> bool {
     self.inner.as_ptr().eq(&other.inner.as_ptr())
+  }
+}
+
+impl From<encoding::Node> for Node {
+  fn from(value: encoding::Node) -> Self {
+    Self::from_encoding(value)
+  }
+}
+
+impl From<Node> for encoding::Node {
+  fn from(value: Node) -> Self {
+    value.into_encoding()
   }
 }
 
@@ -120,6 +155,19 @@ impl Node {
 
     current.inner.borrow_mut().children = children;
     current
+  }
+
+  pub fn into_encoding(&self) -> encoding::Node {
+    let node = self.inner.borrow();
+
+    encoding::Node {
+      icon: node.icon.clone(),
+      is_expanded: node.is_expanded,
+      contents: vec![encoding::Text {
+        text: node.name.clone(),
+      }],
+      children: node.children.iter().map(Self::into_encoding).collect(),
+    }
   }
 
   fn get_node_by_line(&self, mut line: usize) -> (usize, Option<Self>) {
