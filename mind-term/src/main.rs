@@ -34,9 +34,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
   let base_sel = cli
     .base_sel
     .as_ref()
-    .and_then(|base_sel| {
-      tree.get_node_by_path(base_sel.split('/').filter(|frag| !frag.trim().is_empty()))
-    })
+    .and_then(|base_sel| tree.get_node_by_path(path_iter(base_sel)))
     .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
   match cli.cmd {
@@ -57,6 +55,13 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
     Command::Icon { icon } => {
       let icon = icon.join(" ");
       change_icon(base_sel, icon);
+    }
+
+    Command::Move { mode, dest } => {
+      let dest = tree
+        .get_node_by_path(path_iter(&dest))
+        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      move_from_to(base_sel, dest, mode)?;
     }
   }
 
@@ -91,4 +96,18 @@ fn rename(base_sel: Node, name: impl AsRef<str>) -> Result<(), PutainDeMerdeErro
 /// Change the icon of a node
 fn change_icon(base_sel: Node, icon: impl AsRef<str>) {
   base_sel.set_icon(icon);
+}
+
+/// Move a node from a source to a destination.
+fn move_from_to(src: Node, dest: Node, mode: InsertMode) -> Result<(), PutainDeMerdeError> {
+  match mode {
+    InsertMode::InsideTop => Ok(dest.move_top(src)?),
+    InsertMode::InsideBottom => Ok(dest.move_bottom(src)?),
+    InsertMode::Before => Ok(dest.move_before(src)?),
+    InsertMode::After => Ok(dest.move_after(src)?),
+  }
+}
+
+fn path_iter<'a>(path: &'a str) -> impl Iterator<Item = &'a str> {
+  path.split('/').filter(|frag| !frag.trim().is_empty())
 }

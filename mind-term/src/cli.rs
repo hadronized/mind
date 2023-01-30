@@ -50,6 +50,18 @@ pub enum Command {
     /// New icon of the node.
     icon: Vec<String>,
   },
+
+  /// Move a node into another one.
+  ///
+  /// The selected node is the node to move and the path is the destination.
+  #[command(alias = "mv")]
+  Move {
+    #[arg(default_value_t, short, value_enum)]
+    mode: InsertMode,
+
+    /// Destination path
+    dest: String,
+  },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
