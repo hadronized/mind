@@ -351,6 +351,20 @@ impl Node {
     let mut node = self.inner.borrow_mut();
     node.is_expanded = !node.is_expanded;
   }
+
+  pub fn paths(&self) -> Vec<String> {
+    let mut all_paths = vec!["/".to_owned()];
+    self.paths_rec("", &mut all_paths);
+    all_paths
+  }
+
+  fn paths_rec(&self, parent: &str, paths: &mut Vec<String>) {
+    for child in &self.inner.borrow().children {
+      let path = format!("{parent}/{name}", name = child.name());
+      paths.push(path.clone());
+      child.paths_rec(&path, paths);
+    }
+  }
 }
 
 #[derive(Clone, Debug)]
@@ -854,5 +868,21 @@ mod tests {
         .get_index_from_parent(),
       Ok(1)
     );
+  }
+
+  #[test]
+  fn test_paths() {
+    let tree = Tree::new("root", "");
+    let node = tree.get_node_by_line(0).unwrap();
+
+    node.insert_bottom(Node::new("x", ""));
+    node.insert_bottom(Node::new("y", ""));
+
+    let x = tree.get_node_by_path(["x"]).unwrap();
+    x.insert_bottom(Node::new("a", ""));
+    x.insert_bottom(Node::new("b", ""));
+    x.insert_bottom(Node::new("c", ""));
+
+    assert_eq!(node.paths(), vec!["/", "/x", "/x/a", "/x/b", "/x/c", "/y"]);
   }
 }
