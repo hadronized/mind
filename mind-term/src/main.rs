@@ -34,38 +34,49 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
   let base_sel = cli
     .base_sel
     .as_ref()
-    .and_then(|base_sel| tree.get_node_by_path(path_iter(base_sel)))
-    .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+    .and_then(|base_sel| tree.get_node_by_path(path_iter(base_sel)));
 
   match cli.cmd {
     Command::Insert { mode, name } => {
+      let base_sel = base_sel.ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let name = name.join(" ");
       insert(&base_sel, Node::new(name, ""), mode)?;
     }
 
     Command::Remove => {
+      let base_sel = base_sel.ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       remove(base_sel)?;
     }
 
     Command::Rename { name } => {
+      let base_sel = base_sel.ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let name = name.join(" ");
       rename(base_sel, name)?;
     }
 
     Command::Icon { icon } => {
+      let base_sel = base_sel.ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let icon = icon.join(" ");
       change_icon(base_sel, icon);
     }
 
     Command::Move { mode, dest } => {
+      let base_sel = base_sel.ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let dest = tree
         .get_node_by_path(path_iter(&dest))
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       move_from_to(base_sel, dest, mode)?;
     }
-  }
 
-  println!("{tree:#?}");
+    Command::Paths { stdout } => {
+      let base_sel = base_sel.unwrap_or_else(|| tree.root());
+      if stdout {
+        for path in base_sel.paths() {
+          println!("{}", path);
+        }
+      }
+    }
+  }
 
   Ok(())
 }

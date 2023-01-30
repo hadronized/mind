@@ -62,6 +62,13 @@ pub enum Command {
     /// Destination path
     dest: String,
   },
+
+  /// Get all paths in a given node.
+  Paths {
+    /// Whether the paths should be printed to stdout.
+    #[arg(short, long, default_value_t = true)]
+    stdout: bool,
+  },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
