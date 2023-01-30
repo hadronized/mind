@@ -53,6 +53,11 @@ impl Tree {
     }
   }
 
+  /// Get the root node.
+  pub fn root(&self) -> Node {
+    self.node.clone()
+  }
+
   /// Get a [`Node`] by line number.
   ///
   /// 0-indexed.
