@@ -7,10 +7,6 @@ pub struct CLI {
   #[arg(short, long)]
   pub path: Option<PathBuf>,
 
-  /// Select a base node to operate on.
-  #[arg(short = 's', long)]
-  pub base_sel: Option<String>,
-
   #[command(subcommand)]
   pub cmd: Command,
 }
@@ -25,6 +21,9 @@ pub enum Command {
     #[arg(default_value_t, short, value_enum)]
     mode: InsertMode,
 
+    /// Select a base node to operate on.
+    sel: String,
+
     /// Name of the node to create.
     name: Vec<String>,
   },
@@ -33,12 +32,18 @@ pub enum Command {
   ///
   /// This command requires a base selection.
   #[command(alias = "rm")]
-  Remove,
+  Remove {
+    /// Select a base node to operate on.
+    sel: String,
+  },
 
   /// Rename a node.
   ///
   /// This command requires a base selection.
   Rename {
+    /// Select a base node to operate on.
+    sel: String,
+
     /// New name of the node.
     name: Vec<String>,
   },
@@ -47,6 +52,9 @@ pub enum Command {
   ///
   /// This command requires a base selection
   Icon {
+    /// Select a base node to operate on.
+    sel: String,
+
     /// New icon of the node.
     icon: Vec<String>,
   },
@@ -59,6 +67,9 @@ pub enum Command {
     #[arg(default_value_t, short, value_enum)]
     mode: InsertMode,
 
+    /// Select a base node to operate on.
+    sel: String,
+
     /// Destination path
     dest: String,
   },
@@ -68,6 +79,9 @@ pub enum Command {
     /// Whether the paths should be printed to stdout.
     #[arg(short, long, default_value_t = true)]
     stdout: bool,
+
+    /// Select a base node to operate on.
+    sel: Option<String>,
   },
 }
 

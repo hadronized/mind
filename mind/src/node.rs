@@ -358,7 +358,7 @@ impl Node {
   }
 
   pub fn paths(&self) -> Vec<String> {
-    let mut all_paths = vec!["/".to_owned()];
+    let mut all_paths = Vec::new();
     self.paths_rec("", &mut all_paths);
     all_paths
   }
