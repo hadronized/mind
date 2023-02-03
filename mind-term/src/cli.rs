@@ -3,9 +3,13 @@ use std::{fmt::Display, path::PathBuf};
 
 #[derive(Debug, Parser)]
 pub struct CLI {
-  /// Path to a Mind tree.
+  /// Open a specific Mind tree at a given path.
   #[arg(short, long)]
   pub path: Option<PathBuf>,
+
+  /// Use a CWD-tree instead of the global tree.
+  #[arg(short, long, default_value_t = false)]
+  pub cwd: bool,
 
   #[command(subcommand)]
   pub cmd: Command,

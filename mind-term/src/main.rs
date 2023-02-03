@@ -5,11 +5,13 @@ use clap::Parser;
 use cli::{Command, InsertMode, CLI};
 use colored::Colorize;
 use config::Config;
+use mind::forest::Forest;
 use mind::node::{Node, NodeError};
 use mind::{encoding, node::Tree};
 use std::error::Error as StdError;
 use std::fmt::Display;
-use std::fs::{self};
+use std::fs;
+use std::path::Path;
 use thiserror::Error;
 
 fn main() -> Result<(), Box<dyn StdError>> {
@@ -22,9 +24,38 @@ fn main() -> Result<(), Box<dyn StdError>> {
   }
 
   if let Some(ref path) = cli.path {
+    // run on a specific Mind tree
     let tree: encoding::Tree = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let tree = Tree::from_encoding(tree);
-    with_tree(cli, tree)?;
+    return Ok(with_tree(cli, tree)?);
+  }
+
+  let forest = load_forest(&config).or_else(|e| match e {
+    PutainDeMerdeError::NoForestPersisted => {
+      // no forest persisted yet, create a new one…
+      let forest = Forest::new(Tree::new("Main", " "));
+
+      // … and persist it
+      let path = config
+        .persistence
+        .forest_path()
+        .ok_or(PutainDeMerdeError::NoForestPath)?;
+      persist_forest(&forest, path)?;
+
+      Ok(forest)
+    }
+
+    _ => Err(e),
+  })?;
+
+  println!("{forest:#?}");
+
+  if cli.cwd {
+    // run by looking up the CWD
+    // TODO: check whether we want a local tree or a global one
+    todo!()
+  } else {
+    // use the main tree
   }
 
   Ok(())
@@ -41,6 +72,27 @@ pub enum PutainDeMerdeError {
 
   #[error("forbidden node operation")]
   NodeOperation(#[from] NodeError),
+
+  #[error("no forest path; are you running without a filesystem?")]
+  NoForestPath,
+
+  #[error("no forest persisted yet")]
+  NoForestPersisted,
+
+  #[error("error while serializing forest")]
+  CannotSerializeForest(serde_json::Error),
+
+  #[error("error while deserializing forest")]
+  CannotDeserializeForest(serde_json::Error),
+
+  #[error("error while creating directories to hold the forest on the filesystem")]
+  CannotCreateForestDirectories(std::io::Error),
+
+  #[error("error while writing forest to the filesystem")]
+  CannotWriteForest(std::io::Error),
+
+  #[error("error while reading forest from the filesystem")]
+  CannotReadForest(std::io::Error),
 }
 
 fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
@@ -144,4 +196,37 @@ fn move_from_to(src: Node, dest: Node, mode: InsertMode) -> Result<(), PutainDeM
 
 fn path_iter<'a>(path: &'a str) -> impl Iterator<Item = &'a str> {
   path.split('/').filter(|frag| !frag.trim().is_empty())
+}
+
+fn load_forest(config: &Config) -> Result<Forest, PutainDeMerdeError> {
+  let forest_path = config
+    .persistence
+    .forest_path()
+    .ok_or(PutainDeMerdeError::NoForestPath)?;
+
+  if forest_path.exists() {
+    let contents =
+      std::fs::read_to_string(forest_path).map_err(PutainDeMerdeError::CannotReadForest)?;
+    serde_json::from_str(&contents).map_err(PutainDeMerdeError::CannotDeserializeForest)
+  } else {
+    // nothing to load
+    Err(PutainDeMerdeError::NoForestPersisted)
+  }
+}
+
+fn persist_forest(forest: &Forest, path: impl AsRef<Path>) -> Result<(), PutainDeMerdeError> {
+  let path = path.as_ref();
+
+  // ensure all parent directories are created
+  match path.parent() {
+    Some(parent) => {
+      std::fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateForestDirectories)?;
+    }
+    _ => (),
+  }
+
+  let serialized =
+    serde_json::to_string(forest).map_err(PutainDeMerdeError::CannotSerializeForest)?;
+  std::fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteForest)?;
+  Ok(())
 }
