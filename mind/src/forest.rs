@@ -34,13 +34,13 @@ impl Forest {
   }
 
   /// Get the main [`Tree`].
-  pub fn main_tree_mut(&mut self) -> &mut Tree {
-    &mut self.tree
+  pub fn main_tree(&self) -> &Tree {
+    &self.tree
   }
 
   /// Get a CWD-based [`Tree`].
-  pub fn cwd_tree_mut(&mut self, cwd: impl AsRef<Path>) -> Option<&mut Tree> {
-    self.projects.get_mut(cwd.as_ref())
+  pub fn cwd_tree(&self, cwd: impl AsRef<Path>) -> Option<&Tree> {
+    self.projects.get(cwd.as_ref())
   }
 
   /// Add a [`Tree`] for the given CWD.
