@@ -8,10 +8,11 @@ use config::Config;
 use mind::forest::Forest;
 use mind::node::{Node, NodeError};
 use mind::{encoding, node::Tree};
+use std::env::current_dir;
 use std::error::Error as StdError;
 use std::fmt::Display;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 fn main() -> Result<(), Box<dyn StdError>> {
@@ -27,20 +28,30 @@ fn main() -> Result<(), Box<dyn StdError>> {
     // run on a specific Mind tree
     let tree: encoding::Tree = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let tree = Tree::from_encoding(tree);
-    return Ok(with_tree(cli, tree)?);
+
+    match with_tree(cli, &tree)? {
+      TreeFeedback::Persist => {
+        // TODO: persist specific tree to path
+      }
+
+      TreeFeedback::Exit => (),
+    }
+
+    return Ok(());
   }
 
-  let forest = load_forest(&config).or_else(|e| match e {
+  let forest_path = config
+    .persistence
+    .forest_path()
+    .ok_or(PutainDeMerdeError::NoForestPath)?;
+
+  let forest = load_forest(&forest_path).or_else(|e| match e {
     PutainDeMerdeError::NoForestPersisted => {
       // no forest persisted yet, create a new one…
       let forest = Forest::new(Tree::new("Main", " "));
 
       // … and persist it
-      let path = config
-        .persistence
-        .forest_path()
-        .ok_or(PutainDeMerdeError::NoForestPath)?;
-      persist_forest(&forest, path)?;
+      persist_forest(&forest, &forest_path)?;
 
       Ok(forest)
     }
@@ -48,14 +59,25 @@ fn main() -> Result<(), Box<dyn StdError>> {
     _ => Err(e),
   })?;
 
-  println!("{forest:#?}");
-
-  if cli.cwd {
+  let feedback = if cli.cwd {
     // run by looking up the CWD
+    let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
+
     // TODO: check whether we want a local tree or a global one
-    todo!()
+    with_tree(
+      cli,
+      forest
+        .cwd_tree(&cwd)
+        .ok_or_else(|| PutainDeMerdeError::NoCWDTree(cwd))?,
+    )?
   } else {
     // use the main tree
+    with_tree(cli, forest.main_tree())?
+  };
+
+  match feedback {
+    TreeFeedback::Persist => persist_forest(&forest, forest_path)?,
+    TreeFeedback::Exit => (),
   }
 
   Ok(())
@@ -93,9 +115,24 @@ pub enum PutainDeMerdeError {
 
   #[error("error while reading forest from the filesystem")]
   CannotReadForest(std::io::Error),
+
+  #[error("no current working directory")]
+  NoCWD(std::io::Error),
+
+  #[error("no such CWD-based tree")]
+  NoCWDTree(PathBuf),
 }
 
-fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
+/// Feedback returned by operations dealing with trees.
+///
+/// The purpose of this type is to provide information to the caller about what to do next, mainly.
+#[derive(Debug)]
+enum TreeFeedback {
+  Exit,
+  Persist,
+}
+
+fn with_tree(cli: CLI, tree: &Tree) -> Result<TreeFeedback, PutainDeMerdeError> {
   match cli.cmd {
     Command::Insert { mode, sel, name } => {
       let sel = tree
@@ -103,6 +140,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let name = name.join(" ");
       insert(&sel, Node::new(name, ""), mode)?;
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Remove { sel } => {
@@ -110,6 +148,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .get_node_by_path(path_iter(&sel))
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       remove(sel)?;
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Rename { sel, name } => {
@@ -118,6 +157,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let name = name.join(" ");
       rename(sel, name)?;
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Icon { sel, icon } => {
@@ -126,6 +166,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let icon = icon.join(" ");
       change_icon(sel, icon);
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Move { mode, sel, dest } => {
@@ -136,6 +177,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .get_node_by_path(path_iter(&dest))
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       move_from_to(sel, dest, mode)?;
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Paths { stdout, sel } => {
@@ -150,10 +192,10 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
           println!("{}", path);
         }
       }
+
+      Ok(TreeFeedback::Exit)
     }
   }
-
-  Ok(())
 }
 
 /// Insert a node into a selected one.
@@ -198,15 +240,11 @@ fn path_iter<'a>(path: &'a str) -> impl Iterator<Item = &'a str> {
   path.split('/').filter(|frag| !frag.trim().is_empty())
 }
 
-fn load_forest(config: &Config) -> Result<Forest, PutainDeMerdeError> {
-  let forest_path = config
-    .persistence
-    .forest_path()
-    .ok_or(PutainDeMerdeError::NoForestPath)?;
+fn load_forest(path: impl AsRef<Path>) -> Result<Forest, PutainDeMerdeError> {
+  let path = path.as_ref();
 
-  if forest_path.exists() {
-    let contents =
-      std::fs::read_to_string(forest_path).map_err(PutainDeMerdeError::CannotReadForest)?;
+  if path.exists() {
+    let contents = std::fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadForest)?;
     serde_json::from_str(&contents).map_err(PutainDeMerdeError::CannotDeserializeForest)
   } else {
     // nothing to load
