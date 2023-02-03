@@ -3,16 +3,24 @@ mod config;
 
 use clap::Parser;
 use cli::{Command, InsertMode, CLI};
+use colored::Colorize;
+use config::Config;
 use mind::node::{Node, NodeError};
 use mind::{encoding, node::Tree};
 use std::error::Error as StdError;
-use std::fs;
+use std::fmt::Display;
+use std::fs::{self};
 use thiserror::Error;
 
 fn main() -> Result<(), Box<dyn StdError>> {
   let cli = CLI::parse();
 
-  // run on a specific Mind tree
+  // TODO: get config from env var / XDG / whatever
+  let (config, config_err) = Config::load_or_default();
+  if let Some(config_err) = config_err {
+    err_msg(format!("error while reading configuration: {}", config_err));
+  }
+
   if let Some(ref path) = cli.path {
     let tree: encoding::Tree = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let tree = Tree::from_encoding(tree);
@@ -20,6 +28,10 @@ fn main() -> Result<(), Box<dyn StdError>> {
   }
 
   Ok(())
+}
+
+fn err_msg(msg: impl Display) {
+  eprintln!("{}", msg.to_string().red());
 }
 
 #[derive(Debug, Error)]
