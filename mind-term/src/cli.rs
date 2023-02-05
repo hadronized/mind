@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use std::{fmt::Display, path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 pub struct CLI {
@@ -105,15 +105,4 @@ pub enum InsertMode {
 
   /// Insert the node as a sibling, just after the selected node (if the selected has a parent)
   After,
-}
-
-impl Display for InsertMode {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      InsertMode::InsideTop => f.write_str("top"),
-      InsertMode::InsideBottom => f.write_str("bottom"),
-      InsertMode::Before => f.write_str("before"),
-      InsertMode::After => f.write_str("after"),
-    }
-  }
 }
