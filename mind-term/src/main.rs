@@ -1,24 +1,90 @@
 mod cli;
+mod config;
 
 use clap::Parser;
 use cli::{Command, InsertMode, CLI};
+use colored::Colorize;
+use config::Config;
+use mind::forest::Forest;
 use mind::node::{Node, NodeError};
 use mind::{encoding, node::Tree};
+use std::env::current_dir;
 use std::error::Error as StdError;
+use std::fmt::Display;
 use std::fs;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 fn main() -> Result<(), Box<dyn StdError>> {
   let cli = CLI::parse();
 
-  // run on a specific Mind tree
+  // TODO: get config from env var / XDG / whatever
+  let (config, config_err) = Config::load_or_default();
+  if let Some(config_err) = config_err {
+    err_msg(format!("error while reading configuration: {}", config_err));
+  }
+
   if let Some(ref path) = cli.path {
+    // run on a specific Mind tree
     let tree: encoding::Tree = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let tree = Tree::from_encoding(tree);
-    with_tree(cli, tree)?;
+
+    match with_tree(cli, &tree)? {
+      TreeFeedback::Persist => {
+        // TODO: persist specific tree to path
+      }
+
+      TreeFeedback::Exit => (),
+    }
+
+    return Ok(());
+  }
+
+  let forest_path = config
+    .persistence
+    .forest_path()
+    .ok_or(PutainDeMerdeError::NoForestPath)?;
+
+  let forest = load_forest(&forest_path).or_else(|e| match e {
+    PutainDeMerdeError::NoForestPersisted => {
+      // no forest persisted yet, create a new one…
+      let forest = Forest::new(Tree::new("Main", " "));
+
+      // … and persist it
+      persist_forest(&forest, &forest_path)?;
+
+      Ok(forest)
+    }
+
+    _ => Err(e),
+  })?;
+
+  let feedback = if cli.cwd {
+    // run by looking up the CWD
+    let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
+
+    // TODO: check whether we want a local tree or a global one
+    with_tree(
+      cli,
+      forest
+        .cwd_tree(&cwd)
+        .ok_or_else(|| PutainDeMerdeError::NoCWDTree(cwd))?,
+    )?
+  } else {
+    // use the main tree
+    with_tree(cli, forest.main_tree())?
+  };
+
+  match feedback {
+    TreeFeedback::Persist => persist_forest(&forest, forest_path)?,
+    TreeFeedback::Exit => (),
   }
 
   Ok(())
+}
+
+fn err_msg(msg: impl Display) {
+  eprintln!("{}", msg.to_string().red());
 }
 
 #[derive(Debug, Error)]
@@ -28,9 +94,45 @@ pub enum PutainDeMerdeError {
 
   #[error("forbidden node operation")]
   NodeOperation(#[from] NodeError),
+
+  #[error("no forest path; are you running without a filesystem?")]
+  NoForestPath,
+
+  #[error("no forest persisted yet")]
+  NoForestPersisted,
+
+  #[error("error while serializing forest")]
+  CannotSerializeForest(serde_json::Error),
+
+  #[error("error while deserializing forest")]
+  CannotDeserializeForest(serde_json::Error),
+
+  #[error("error while creating directories to hold the forest on the filesystem")]
+  CannotCreateForestDirectories(std::io::Error),
+
+  #[error("error while writing forest to the filesystem")]
+  CannotWriteForest(std::io::Error),
+
+  #[error("error while reading forest from the filesystem")]
+  CannotReadForest(std::io::Error),
+
+  #[error("no current working directory")]
+  NoCWD(std::io::Error),
+
+  #[error("no such CWD-based tree")]
+  NoCWDTree(PathBuf),
 }
 
-fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
+/// Feedback returned by operations dealing with trees.
+///
+/// The purpose of this type is to provide information to the caller about what to do next, mainly.
+#[derive(Debug)]
+enum TreeFeedback {
+  Exit,
+  Persist,
+}
+
+fn with_tree(cli: CLI, tree: &Tree) -> Result<TreeFeedback, PutainDeMerdeError> {
   match cli.cmd {
     Command::Insert { mode, sel, name } => {
       let sel = tree
@@ -38,6 +140,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let name = name.join(" ");
       insert(&sel, Node::new(name, ""), mode)?;
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Remove { sel } => {
@@ -45,6 +148,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .get_node_by_path(path_iter(&sel))
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       remove(sel)?;
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Rename { sel, name } => {
@@ -53,6 +157,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let name = name.join(" ");
       rename(sel, name)?;
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Icon { sel, icon } => {
@@ -61,6 +166,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let icon = icon.join(" ");
       change_icon(sel, icon);
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Move { mode, sel, dest } => {
@@ -71,6 +177,7 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
         .get_node_by_path(path_iter(&dest))
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       move_from_to(sel, dest, mode)?;
+      Ok(TreeFeedback::Persist)
     }
 
     Command::Paths { stdout, sel } => {
@@ -85,10 +192,10 @@ fn with_tree(cli: CLI, tree: Tree) -> Result<(), Box<dyn StdError>> {
           println!("{}", path);
         }
       }
+
+      Ok(TreeFeedback::Exit)
     }
   }
-
-  Ok(())
 }
 
 /// Insert a node into a selected one.
@@ -131,4 +238,33 @@ fn move_from_to(src: Node, dest: Node, mode: InsertMode) -> Result<(), PutainDeM
 
 fn path_iter<'a>(path: &'a str) -> impl Iterator<Item = &'a str> {
   path.split('/').filter(|frag| !frag.trim().is_empty())
+}
+
+fn load_forest(path: impl AsRef<Path>) -> Result<Forest, PutainDeMerdeError> {
+  let path = path.as_ref();
+
+  if path.exists() {
+    let contents = std::fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadForest)?;
+    serde_json::from_str(&contents).map_err(PutainDeMerdeError::CannotDeserializeForest)
+  } else {
+    // nothing to load
+    Err(PutainDeMerdeError::NoForestPersisted)
+  }
+}
+
+fn persist_forest(forest: &Forest, path: impl AsRef<Path>) -> Result<(), PutainDeMerdeError> {
+  let path = path.as_ref();
+
+  // ensure all parent directories are created
+  match path.parent() {
+    Some(parent) => {
+      std::fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateForestDirectories)?;
+    }
+    _ => (),
+  }
+
+  let serialized =
+    serde_json::to_string(forest).map_err(PutainDeMerdeError::CannotSerializeForest)?;
+  std::fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteForest)?;
+  Ok(())
 }

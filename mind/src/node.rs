@@ -117,7 +117,9 @@ impl Node {
 
   fn new_raw(name: &str, icon: &str, is_expanded: bool, parent: Option<WeakNode>) -> Self {
     let name = name.trim().to_owned();
-    let icon = icon.trim().to_owned();
+
+    // we only trim left because sometimes, the right space is meaningful for some icons
+    let icon = icon.trim_start().to_owned();
 
     Self {
       inner: Rc::new(RefCell::new(NodeInner {
