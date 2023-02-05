@@ -26,7 +26,9 @@ fn main() -> Result<(), Box<dyn StdError>> {
 
   if let Some(ref path) = cli.path {
     // run on a specific Mind tree
-    let tree: encoding::Tree = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let tree: encoding::Tree =
+      serde_json::from_str(&fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadTree)?)
+        .map_err(PutainDeMerdeError::CannotDeserializeTree)?;
     let tree = Tree::from_encoding(tree);
 
     match with_tree(cli, &tree)? {
@@ -115,6 +117,18 @@ pub enum PutainDeMerdeError {
 
   #[error("error while reading forest from the filesystem")]
   CannotReadForest(std::io::Error),
+
+  #[error("error while serializing specific tree from the filesystem")]
+  CannotSerializeTree(serde_json::Error),
+
+  #[error("error while deserializing specific tree from the filesystem")]
+  CannotDeserializeTree(serde_json::Error),
+
+  #[error("error while reading specific tree from the filesystem")]
+  CannotReadTree(std::io::Error),
+
+  #[error("error while writing specific tree from the filesystem")]
+  CannotWriteTree(std::io::Error),
 
   #[error("no current working directory")]
   NoCWD(std::io::Error),
