@@ -11,8 +11,10 @@ use mind::{encoding, node::Tree};
 use std::env::current_dir;
 use std::error::Error as StdError;
 use std::fmt::Display;
-use std::fs;
+use std::io::{read_to_string, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::{fs, io};
 use thiserror::Error;
 
 fn main() -> Result<(), Box<dyn StdError>> {
@@ -31,7 +33,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
         .map_err(PutainDeMerdeError::CannotDeserializeTree)?;
     let tree = Tree::from_encoding(tree);
 
-    match with_tree(cli, &tree)? {
+    match with_tree(&config, cli, &tree)? {
       TreeFeedback::Persist => {
         // TODO: persist specific tree to path
       }
@@ -67,6 +69,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
 
     // TODO: check whether we want a local tree or a global one
     with_tree(
+      &config,
       cli,
       forest
         .cwd_tree(&cwd)
@@ -74,7 +77,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     )?
   } else {
     // use the main tree
-    with_tree(cli, forest.main_tree())?
+    with_tree(&config, cli, forest.main_tree())?
   };
 
   match feedback {
@@ -135,6 +138,12 @@ pub enum PutainDeMerdeError {
 
   #[error("no such CWD-based tree")]
   NoCWDTree(PathBuf),
+
+  #[error("node with empty name")]
+  EmptyName,
+
+  #[error("cannot write a path")]
+  CannotWritePath(io::Error),
 }
 
 /// Feedback returned by operations dealing with trees.
@@ -146,74 +155,104 @@ enum TreeFeedback {
   Persist,
 }
 
-fn with_tree(cli: CLI, tree: &Tree) -> Result<TreeFeedback, PutainDeMerdeError> {
-  match cli.cmd {
+fn get_base_sel(config: &Config, cli: &CLI, sel: &Option<String>, tree: &Tree) -> Option<Node> {
+  sel
+    .as_ref()
+    .and_then(|path| tree.get_node_by_path(path_iter(&path)))
+    .or_else(|| {
+      // no explicit selection; try to use a fuzzy finder
+      if !cli.interactive {
+        return None;
+      }
+
+      let program = config.interactive.fuzzy_term_program()?;
+      let child = std::process::Command::new(program)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok()?;
+      let mut child_stdin = child.stdin?;
+      write_paths("/", &tree.root(), &mut child_stdin).ok()?; // FIXME
+      let path = read_to_string(&mut child.stdout?).ok()?; // FIXME
+      tree.get_node_by_path(path_iter(path.trim()))
+    })
+}
+
+fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, PutainDeMerdeError> {
+  match &cli.cmd {
     Command::Insert { mode, sel, name } => {
-      let sel = tree
-        .get_node_by_path(path_iter(&sel))
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel =
+        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let name = name.join(" ");
-      insert(&sel, Node::new(name, ""), mode)?;
+
+      insert(&sel, Node::new(name, ""), *mode)?;
       Ok(TreeFeedback::Persist)
     }
 
     Command::Remove { sel } => {
-      let sel = tree
-        .get_node_by_path(path_iter(&sel))
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel =
+        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       remove(sel)?;
       Ok(TreeFeedback::Persist)
     }
 
     Command::Rename { sel, name } => {
-      let sel = tree
-        .get_node_by_path(path_iter(&sel))
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel =
+        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let name = name.join(" ");
       rename(sel, name)?;
       Ok(TreeFeedback::Persist)
     }
 
     Command::Icon { sel, icon } => {
-      let sel = tree
-        .get_node_by_path(path_iter(&sel))
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel =
+        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let icon = icon.join(" ");
       change_icon(sel, icon);
       Ok(TreeFeedback::Persist)
     }
 
     Command::Move { mode, sel, dest } => {
-      let sel = tree
-        .get_node_by_path(path_iter(&sel))
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel =
+        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       let dest = tree
         .get_node_by_path(path_iter(&dest))
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-      move_from_to(sel, dest, mode)?;
+      move_from_to(sel, dest, *mode)?;
       Ok(TreeFeedback::Persist)
     }
 
-    Command::Paths { stdout, sel } => {
-      let path = sel.as_deref().unwrap_or("/");
+    Command::Paths { sel } => {
+      let prefix = sel.as_deref().unwrap_or("/");
       let sel = tree
-        .get_node_by_path(path_iter(path))
+        .get_node_by_path(path_iter(prefix))
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-      if stdout {
-        let prefix = if path.starts_with("/") { "" } else { "/" };
-        println!("{prefix}{path}");
-        for path in sel.paths() {
-          println!("{}", path);
-        }
-      }
+      write_paths(prefix, &sel, &mut io::stdout())?;
 
       Ok(TreeFeedback::Exit)
     }
   }
 }
 
+/// Write paths to the provided writer.
+fn write_paths(
+  prefix: &str,
+  base_sel: &Node,
+  writer: &mut impl Write,
+) -> Result<(), PutainDeMerdeError> {
+  for path in base_sel.paths(prefix) {
+    writeln!(writer, "{}", path).map_err(PutainDeMerdeError::CannotWritePath)?;
+  }
+
+  Ok(())
+}
+
 /// Insert a node into a selected one.
 fn insert(base_sel: &Node, node: Node, mode: InsertMode) -> Result<(), PutainDeMerdeError> {
+  if node.name().is_empty() {
+    return Err(PutainDeMerdeError::EmptyName);
+  }
+
   match mode {
     InsertMode::InsideTop => base_sel.insert_top(node),
     InsertMode::InsideBottom => base_sel.insert_bottom(node),
@@ -232,6 +271,12 @@ fn remove(base_sel: Node) -> Result<(), PutainDeMerdeError> {
 
 /// Rename a node.
 fn rename(base_sel: Node, name: impl AsRef<str>) -> Result<(), PutainDeMerdeError> {
+  let name = name.as_ref();
+
+  if name.is_empty() {
+    return Err(PutainDeMerdeError::EmptyName);
+  }
+
   Ok(base_sel.set_name(name)?)
 }
 

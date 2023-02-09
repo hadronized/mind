@@ -24,10 +24,13 @@ pub enum ConfigError {
   },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Config {
   #[serde(default)]
   pub persistence: PersistenceConfig,
+
+  #[serde(default)]
+  pub interactive: InteractiveConfig,
 }
 
 impl Config {
@@ -52,15 +55,7 @@ impl Config {
   }
 }
 
-impl Default for Config {
-  fn default() -> Self {
-    Self {
-      persistence: PersistenceConfig::default(),
-    }
-  }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PersistenceConfig {
   /// Directory where to store data.
   ///
@@ -71,15 +66,6 @@ pub struct PersistenceConfig {
   ///
   /// Defaults to `$XDG_DATA_HOME/mind/state.json`.
   state_path: Option<PathBuf>,
-}
-
-impl Default for PersistenceConfig {
-  fn default() -> Self {
-    Self {
-      data_dir: None,
-      state_path: None,
-    }
-  }
 }
 
 impl PersistenceConfig {
@@ -95,5 +81,17 @@ impl PersistenceConfig {
       .state_path
       .clone()
       .or(dirs::data_dir().map(|p| p.join("mind/mind.json")))
+  }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InteractiveConfig {
+  /// Fuzzy finder to use in terminal mode.
+  fuzzy_term_program: Option<String>,
+}
+
+impl InteractiveConfig {
+  pub fn fuzzy_term_program(&self) -> Option<&str> {
+    self.fuzzy_term_program.as_deref()
   }
 }
