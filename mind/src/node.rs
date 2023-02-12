@@ -359,9 +359,12 @@ impl Node {
     node.is_expanded = !node.is_expanded;
   }
 
-  pub fn paths(&self) -> Vec<String> {
-    let mut all_paths = Vec::new();
-    self.paths_rec("", &mut all_paths);
+  pub fn paths(&self, prefix: impl AsRef<str>) -> Vec<String> {
+    let prefix = prefix.as_ref();
+    let mut all_paths = vec![prefix.to_owned()];
+
+    let prefix = if prefix == "/" { "" } else { prefix };
+    self.paths_rec(prefix, &mut all_paths);
     all_paths
   }
 
@@ -890,6 +893,6 @@ mod tests {
     x.insert_bottom(Node::new("b", ""));
     x.insert_bottom(Node::new("c", ""));
 
-    assert_eq!(node.paths(), vec!["/", "/x", "/x/a", "/x/b", "/x/c", "/y"]);
+    assert_eq!(node.paths(""), vec!["", "/x", "/x/a", "/x/b", "/x/c", "/y"]);
   }
 }

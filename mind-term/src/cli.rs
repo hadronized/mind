@@ -11,6 +11,12 @@ pub struct CLI {
   #[arg(short, long, default_value_t = false)]
   pub cwd: bool,
 
+  /// Interactive mode.
+  ///
+  /// When run in interactive mode, base selections can be selected via a fuzzy program.
+  #[arg(short, long, default_value_t = false)]
+  pub interactive: bool,
+
   #[command(subcommand)]
   pub cmd: Command,
 }
@@ -22,14 +28,16 @@ pub enum Command {
   /// This command requires a base selection.
   #[command(alias = "ins")]
   Insert {
-    #[arg(default_value_t, short, value_enum)]
+    #[arg(default_value_t, short, long, value_enum)]
     mode: InsertMode,
 
     /// Select a base node to operate on.
-    sel: String,
+    #[arg(short, long)]
+    sel: Option<String>,
 
     /// Name of the node to create.
-    name: Vec<String>,
+    #[arg(short, long)]
+    name: Option<String>,
   },
 
   /// Remove a node
@@ -38,7 +46,8 @@ pub enum Command {
   #[command(alias = "rm")]
   Remove {
     /// Select a base node to operate on.
-    sel: String,
+    #[arg(short, long)]
+    sel: Option<String>,
   },
 
   /// Rename a node.
@@ -46,10 +55,12 @@ pub enum Command {
   /// This command requires a base selection.
   Rename {
     /// Select a base node to operate on.
-    sel: String,
+    #[arg(short, long)]
+    sel: Option<String>,
 
     /// New name of the node.
-    name: Vec<String>,
+    #[arg(short, long)]
+    name: Option<String>,
   },
 
   /// Change the icon of a node.
@@ -57,10 +68,12 @@ pub enum Command {
   /// This command requires a base selection
   Icon {
     /// Select a base node to operate on.
-    sel: String,
+    #[arg(short, long)]
+    sel: Option<String>,
 
     /// New icon of the node.
-    icon: Vec<String>,
+    #[arg(short, long)]
+    icon: Option<String>,
   },
 
   /// Move a node into another one.
@@ -72,19 +85,18 @@ pub enum Command {
     mode: InsertMode,
 
     /// Select a base node to operate on.
-    sel: String,
+    #[arg(short, long)]
+    sel: Option<String>,
 
     /// Destination path
-    dest: String,
+    #[arg(short, long)]
+    dest: Option<String>,
   },
 
   /// Get all paths in a given node.
   Paths {
-    /// Whether the paths should be printed to stdout.
-    #[arg(short, long, default_value_t = true)]
-    stdout: bool,
-
     /// Select a base node to operate on.
+    #[arg(short, long)]
     sel: Option<String>,
   },
 }
