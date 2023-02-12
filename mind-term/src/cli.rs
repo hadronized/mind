@@ -32,12 +32,12 @@ pub enum Command {
     mode: InsertMode,
 
     /// Select a base node to operate on.
-    #[arg(short, long, value_enum)]
+    #[arg(short, long)]
     sel: Option<String>,
 
     /// Name of the node to create.
-    #[arg(short, long, value_enum)]
-    name: String,
+    #[arg(short, long)]
+    name: Option<String>,
   },
 
   /// Remove a node
@@ -46,7 +46,7 @@ pub enum Command {
   #[command(alias = "rm")]
   Remove {
     /// Select a base node to operate on.
-    #[arg(short, long, value_enum)]
+    #[arg(short, long)]
     sel: Option<String>,
   },
 
@@ -55,12 +55,12 @@ pub enum Command {
   /// This command requires a base selection.
   Rename {
     /// Select a base node to operate on.
-    #[arg(short, long, value_enum)]
+    #[arg(short, long)]
     sel: Option<String>,
 
     /// New name of the node.
-    #[arg(short, long, value_enum)]
-    name: String,
+    #[arg(short, long)]
+    name: Option<String>,
   },
 
   /// Change the icon of a node.
@@ -68,12 +68,12 @@ pub enum Command {
   /// This command requires a base selection
   Icon {
     /// Select a base node to operate on.
-    #[arg(short, long, value_enum)]
+    #[arg(short, long)]
     sel: Option<String>,
 
     /// New icon of the node.
-    #[arg(short, long, value_enum)]
-    icon: String,
+    #[arg(short, long)]
+    icon: Option<String>,
   },
 
   /// Move a node into another one.
@@ -85,18 +85,18 @@ pub enum Command {
     mode: InsertMode,
 
     /// Select a base node to operate on.
-    #[arg(short, long, value_enum)]
+    #[arg(short, long)]
     sel: Option<String>,
 
     /// Destination path
-    #[arg(short, long, value_enum)]
-    dest: String,
+    #[arg(short, long)]
+    dest: Option<String>,
   },
 
   /// Get all paths in a given node.
   Paths {
     /// Select a base node to operate on.
-    #[arg(short, long, value_enum)]
+    #[arg(short, long)]
     sel: Option<String>,
   },
 }

@@ -8,10 +8,11 @@ use config::Config;
 use mind::forest::Forest;
 use mind::node::{Node, NodeError};
 use mind::{encoding, node::Tree};
+use std::borrow::Cow;
 use std::env::current_dir;
 use std::error::Error as StdError;
 use std::fmt::Display;
-use std::io::{read_to_string, Write};
+use std::io::{read_to_string, stdin, stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::{fs, io};
@@ -144,6 +145,9 @@ pub enum PutainDeMerdeError {
 
   #[error("cannot write a path")]
   CannotWritePath(io::Error),
+
+  #[error("cannot get input from user")]
+  UserInput(std::io::Error),
 }
 
 /// Feedback returned by operations dealing with trees.
@@ -155,6 +159,7 @@ enum TreeFeedback {
   Persist,
 }
 
+// TODO: extract the « interactive part » into a dedicated module / type.
 fn get_base_sel(config: &Config, cli: &CLI, sel: &Option<String>, tree: &Tree) -> Option<Node> {
   sel
     .as_ref()
@@ -174,8 +179,25 @@ fn get_base_sel(config: &Config, cli: &CLI, sel: &Option<String>, tree: &Tree) -
       let mut child_stdin = child.stdin?;
       write_paths("/", &tree.root(), &mut child_stdin).ok()?; // FIXME
       let path = read_to_string(&mut child.stdout?).ok()?; // FIXME
+
+      if path.is_empty() {
+        return None;
+      }
+
       tree.get_node_by_path(path_iter(path.trim()))
     })
+}
+
+// TODO: extract the « interactive part » into a dedicated module / type.
+fn get_input_string(prompt: impl AsRef<str>) -> Result<String, PutainDeMerdeError> {
+  print!("{}", prompt.as_ref());
+  stdout().flush().map_err(PutainDeMerdeError::UserInput)?;
+
+  let mut input = String::new();
+  let _ = stdin()
+    .read_line(&mut input)
+    .map_err(PutainDeMerdeError::UserInput)?;
+  Ok(input)
 }
 
 fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, PutainDeMerdeError> {
@@ -183,6 +205,11 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
     Command::Insert { mode, sel, name } => {
       let sel =
         get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+      let name = match name {
+        Some(name) => Cow::from(name),
+        None => Cow::from(get_input_string("New node name > ")?),
+      };
 
       insert(&sel, Node::new(name.trim(), ""), *mode)?;
       Ok(TreeFeedback::Persist)
@@ -198,6 +225,12 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
     Command::Rename { sel, name } => {
       let sel =
         get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+      let name = match name {
+        Some(name) => Cow::from(name),
+        None => Cow::from(get_input_string("Rename node > ")?),
+      };
+
       rename(sel, name.trim())?;
       Ok(TreeFeedback::Persist)
     }
@@ -205,6 +238,12 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
     Command::Icon { sel, icon } => {
       let sel =
         get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+      let icon = match icon {
+        Some(icon) => Cow::from(icon),
+        None => Cow::from(get_input_string("Change node icon > ")?),
+      };
+
       change_icon(sel, icon.trim());
       Ok(TreeFeedback::Persist)
     }
@@ -212,9 +251,10 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
     Command::Move { mode, sel, dest } => {
       let sel =
         get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-      let dest = tree
-        .get_node_by_path(path_iter(&dest))
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+      let dest =
+        get_base_sel(config, &cli, &dest, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
       move_from_to(sel, dest, *mode)?;
       Ok(TreeFeedback::Persist)
     }
