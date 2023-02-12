@@ -183,9 +183,8 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
     Command::Insert { mode, sel, name } => {
       let sel =
         get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-      let name = name.join(" ");
 
-      insert(&sel, Node::new(name, ""), *mode)?;
+      insert(&sel, Node::new(name.trim(), ""), *mode)?;
       Ok(TreeFeedback::Persist)
     }
 
@@ -199,16 +198,14 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
     Command::Rename { sel, name } => {
       let sel =
         get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-      let name = name.join(" ");
-      rename(sel, name)?;
+      rename(sel, name.trim())?;
       Ok(TreeFeedback::Persist)
     }
 
     Command::Icon { sel, icon } => {
       let sel =
         get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-      let icon = icon.join(" ");
-      change_icon(sel, icon);
+      change_icon(sel, icon.trim());
       Ok(TreeFeedback::Persist)
     }
 
