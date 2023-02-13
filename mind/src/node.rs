@@ -321,14 +321,6 @@ impl Node {
         }
 
         drop(current);
-
-        // NOTE: I’m not entirely sure this should be done here, especially because it ties this code so much to the
-        // file system, which I’m not a huge fan
-        // check whether the file exists; if not, create it
-        if !path.exists() {
-          std::fs::write(path, "").map_err(NodeError::CannotCreateDataFile)?;
-        }
-
         self.inner.borrow_mut().data = Some(data);
       }
 
@@ -1022,9 +1014,9 @@ mod tests {
 
     assert!(matches!(
       node.set_data(NodeData::file("/tmp/bar.rs")),
-      Ok(())
+      Err(NodeError::FileDataAlreadyExists)
     ));
-    assert_eq!(node.data(), Some(NodeData::file("/tmp/bar.rs")));
+    assert_eq!(node.data(), Some(NodeData::file("/tmp/foo.md")));
 
     assert!(matches!(
       node.set_data(NodeData::link("https://foo.bar")),
