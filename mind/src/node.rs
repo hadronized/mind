@@ -4,6 +4,7 @@ use crate::encoding::{self, TreeType};
 use serde::{Deserialize, Serialize};
 use std::{
   cell::RefCell,
+  io,
   path::PathBuf,
   rc::{Rc, Weak},
 };
@@ -162,12 +163,41 @@ impl Node {
       .map(|node| Self::from_encoding_rec(Some(current.downgrade()), node))
       .collect();
 
-    current.inner.borrow_mut().children = children;
+    let data = node
+      .data
+      .map(NodeData::file)
+      .or_else(move || node.url.map(NodeData::link));
+
+    {
+      let mut inner = current.inner.borrow_mut();
+      inner.children = children;
+      inner.data = data;
+    }
+
     current
   }
 
   pub fn into_encoding(&self) -> encoding::Node {
     let node = self.inner.borrow();
+    let data;
+    let url;
+
+    match node.data {
+      Some(NodeData::File(ref path)) => {
+        data = Some(path.clone());
+        url = None;
+      }
+
+      Some(NodeData::Link(ref link)) => {
+        url = Some(link.clone());
+        data = None;
+      }
+
+      None => {
+        data = None;
+        url = None;
+      }
+    }
 
     encoding::Node {
       icon: node.icon.clone(),
@@ -175,6 +205,8 @@ impl Node {
       contents: vec![encoding::Text {
         text: node.name.clone(),
       }],
+      data,
+      url,
       children: node.children.iter().map(Self::into_encoding).collect(),
     }
   }
@@ -271,19 +303,41 @@ impl Node {
 
   pub fn set_data(&self, data: NodeData) -> Result<(), NodeError> {
     let current = self.inner.borrow();
+
     match (current.data.as_ref(), &data) {
       // if nothing is set, set it
-      (None, _) => {
+      (None, NodeData::Link(link)) => {
+        if link.is_empty() {
+          return Err(NodeError::NoData);
+        }
+
+        drop(current);
+        self.inner.borrow_mut().data = Some(data);
+      }
+
+      (None, NodeData::File(path)) => {
+        if path.as_os_str().is_empty() {
+          return Err(NodeError::NoData);
+        }
+
+        drop(current);
+
+        // NOTE: I’m not entirely sure this should be done here, especially because it ties this code so much to the
+        // file system, which I’m not a huge fan
+        // check whether the file exists; if not, create it
+        if !path.exists() {
+          std::fs::write(path, "").map_err(NodeError::CannotCreateDataFile)?;
+        }
+
+        self.inner.borrow_mut().data = Some(data);
+      }
+
+      (Some(NodeData::Link(_)), NodeData::Link(_)) => {
         drop(current);
         self.inner.borrow_mut().data = Some(data)
       }
 
-      // if a data is already set, ensure we replace with the same data type
-      (Some(NodeData::File(_)), NodeData::File(_))
-      | (Some(NodeData::Link(_)), NodeData::Link(_)) => {
-        drop(current);
-        self.inner.borrow_mut().data = Some(data)
-      }
+      (Some(NodeData::File(_)), NodeData::File(_)) => return Err(NodeError::FileDataAlreadyExists),
 
       // otherwise it’s a data type mismatch
       _ => return Err(NodeError::MismatchDataType),
@@ -432,7 +486,7 @@ impl NodeData {
   }
 }
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Debug, Error)]
 pub enum NodeError {
   #[error("cannot insert; no parent")]
   NoParent,
@@ -443,8 +497,17 @@ pub enum NodeError {
   #[error("cannot set name; name cannot be empty")]
   EmptyName,
 
+  #[error("cannot set data; file data already exists")]
+  FileDataAlreadyExists,
+
   #[error("cannot set data; already exists with a different type")]
   MismatchDataType,
+
+  #[error("no data")]
+  NoData,
+
+  #[error("cannot create associated data file: {0}")]
+  CannotCreateDataFile(io::Error),
 }
 
 #[cfg(test)]
@@ -750,20 +813,20 @@ mod tests {
       ),
     });
 
-    assert_eq!(
+    assert!(matches!(
       tree
         .get_node_by_path(["a", "x"])
         .unwrap()
         .get_index_from_parent(),
       Ok(0)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["a", "y"])
         .unwrap()
         .get_index_from_parent(),
       Ok(1)
-    );
+    ));
   }
 
   #[test]
@@ -790,62 +853,62 @@ mod tests {
       .insert_before(Node::new("w", ""))
       .unwrap();
 
-    assert_eq!(
+    assert!(matches!(
       tree
         .get_node_by_path(["a"])
         .unwrap()
         .get_index_from_parent(),
       Ok(0)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["b"])
         .unwrap()
         .get_index_from_parent(),
       Ok(1)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["c"])
         .unwrap()
         .get_index_from_parent(),
       Ok(2)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["d"])
         .unwrap()
         .get_index_from_parent(),
       Ok(3)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["w"])
         .unwrap()
         .get_index_from_parent(),
       Ok(4)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["x"])
         .unwrap()
         .get_index_from_parent(),
       Ok(5)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["y"])
         .unwrap()
         .get_index_from_parent(),
       Ok(6)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["z"])
         .unwrap()
         .get_index_from_parent(),
       Ok(7)
-    );
+    ));
   }
 
   #[test]
@@ -892,41 +955,41 @@ mod tests {
     z.move_before(b).unwrap();
     node.move_bottom(c).unwrap();
 
-    assert_eq!(
+    assert!(matches!(
       tree
         .get_node_by_path(["a", "y"])
         .unwrap()
         .get_index_from_parent(),
       Ok(0)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["a", "x"])
         .unwrap()
         .get_index_from_parent(),
       Ok(1)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["a", "b"])
         .unwrap()
         .get_index_from_parent(),
       Ok(2)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["a", "z"])
         .unwrap()
         .get_index_from_parent(),
       Ok(3)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
       tree
         .get_node_by_path(["c"])
         .unwrap()
         .get_index_from_parent(),
       Ok(1)
-    );
+    ));
   }
 
   #[test]
@@ -951,15 +1014,21 @@ mod tests {
 
     assert_eq!(node.data(), None);
 
-    assert_eq!(node.set_data(NodeData::file("/tmp/foo.md")), Ok(()));
+    assert!(matches!(
+      node.set_data(NodeData::file("/tmp/foo.md")),
+      Ok(())
+    ));
     assert_eq!(node.data(), Some(NodeData::file("/tmp/foo.md")));
 
-    assert_eq!(node.set_data(NodeData::file("/tmp/bar.rs")), Ok(()));
+    assert!(matches!(
+      node.set_data(NodeData::file("/tmp/bar.rs")),
+      Ok(())
+    ));
     assert_eq!(node.data(), Some(NodeData::file("/tmp/bar.rs")));
 
-    assert_eq!(
+    assert!(matches!(
       node.set_data(NodeData::link("https://foo.bar")),
       Err(NodeError::MismatchDataType)
-    );
+    ));
   }
 }
