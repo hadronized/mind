@@ -4,6 +4,7 @@ use crate::encoding::{self, TreeType};
 use serde::{Deserialize, Serialize};
 use std::{
   cell::RefCell,
+  path::PathBuf,
   rc::{Rc, Weak},
 };
 use thiserror::Error;
@@ -127,6 +128,7 @@ impl Node {
         icon,
         is_expanded,
         parent,
+        data: None,
         children: Vec::new(),
       })),
     }
@@ -263,6 +265,33 @@ impl Node {
     self.inner.borrow_mut().icon = icon.into();
   }
 
+  pub fn data(&self) -> Option<NodeData> {
+    self.inner.borrow().data.clone()
+  }
+
+  pub fn set_data(&self, data: NodeData) -> Result<(), NodeError> {
+    let current = self.inner.borrow();
+    match (current.data.as_ref(), &data) {
+      // if nothing is set, set it
+      (None, _) => {
+        drop(current);
+        self.inner.borrow_mut().data = Some(data)
+      }
+
+      // if a data is already set, ensure we replace with the same data type
+      (Some(NodeData::File(_)), NodeData::File(_))
+      | (Some(NodeData::Link(_)), NodeData::Link(_)) => {
+        drop(current);
+        self.inner.borrow_mut().data = Some(data)
+      }
+
+      // otherwise it’s a data type mismatch
+      _ => return Err(NodeError::MismatchDataType),
+    }
+
+    Ok(())
+  }
+
   pub fn is_expanded(&self) -> bool {
     self.inner.borrow().is_expanded
   }
@@ -383,7 +412,24 @@ pub struct NodeInner {
   icon: String,
   is_expanded: bool,
   parent: Option<WeakNode>,
+  data: Option<NodeData>,
   children: Vec<Node>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NodeData {
+  File(PathBuf),
+  Link(String),
+}
+
+impl NodeData {
+  pub fn file(path: impl Into<PathBuf>) -> Self {
+    NodeData::File(path.into())
+  }
+
+  pub fn link(link: impl Into<String>) -> Self {
+    NodeData::Link(link.into())
+  }
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -396,13 +442,16 @@ pub enum NodeError {
 
   #[error("cannot set name; name cannot be empty")]
   EmptyName,
+
+  #[error("cannot set data; already exists with a different type")]
+  MismatchDataType,
 }
 
 #[cfg(test)]
 mod tests {
   use crate::{
     encoding::{self, TreeType, Version},
-    node::{Node, Tree},
+    node::{Node, NodeData, NodeError, Tree},
   };
 
   #[test]
@@ -894,5 +943,23 @@ mod tests {
     x.insert_bottom(Node::new("c", ""));
 
     assert_eq!(node.paths(""), vec!["", "/x", "/x/a", "/x/b", "/x/c", "/y"]);
+  }
+
+  #[test]
+  fn data() {
+    let node = Node::new("test", "");
+
+    assert_eq!(node.data(), None);
+
+    assert_eq!(node.set_data(NodeData::file("/tmp/foo.md")), Ok(()));
+    assert_eq!(node.data(), Some(NodeData::file("/tmp/foo.md")));
+
+    assert_eq!(node.set_data(NodeData::file("/tmp/bar.rs")), Ok(()));
+    assert_eq!(node.data(), Some(NodeData::file("/tmp/bar.rs")));
+
+    assert_eq!(
+      node.set_data(NodeData::link("https://foo.bar")),
+      Err(NodeError::MismatchDataType)
+    );
   }
 }
