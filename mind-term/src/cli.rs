@@ -99,6 +99,33 @@ pub enum Command {
     #[arg(short, long)]
     sel: Option<String>,
   },
+
+  /// Get associated data with a node.
+  Data {
+    /// Select a base node to operate on.
+    #[arg(short, long)]
+    sel: Option<String>,
+
+    /// Data type to use for the node.
+    #[arg(name = "type", short, long, value_enum)]
+    ty: DataType,
+
+    #[command(subcommand)]
+    cmd: DataCommand,
+  },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DataCommand {
+  Get,
+
+  Set {
+    /// If you ask for a given type of data and the node has no data associated with, the data operation will be
+    /// refused. You can use this switch to create the data before operating on it. Depending on the data type, the
+    /// content will be interpreted differently.
+    #[arg(default_value_t)]
+    content: String,
+  },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -117,4 +144,10 @@ pub enum InsertMode {
 
   /// Insert the node as a sibling, just after the selected node (if the selected has a parent)
   After,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum DataType {
+  File,
+  Link,
 }

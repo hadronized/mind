@@ -2,11 +2,11 @@ mod cli;
 mod config;
 
 use clap::Parser;
-use cli::{Command, InsertMode, CLI};
+use cli::{Command, DataCommand, DataType, InsertMode, CLI};
 use colored::Colorize;
 use config::Config;
 use mind::forest::Forest;
-use mind::node::{Node, NodeError};
+use mind::node::{Node, NodeData, NodeError};
 use mind::{encoding, node::Tree};
 use std::borrow::Cow;
 use std::env::current_dir;
@@ -267,6 +267,35 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
       write_paths(prefix, &sel, &mut io::stdout())?;
 
       Ok(TreeFeedback::Exit)
+    }
+
+    Command::Data { sel, ty, cmd } => {
+      let sel =
+        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+      match cmd {
+        DataCommand::Get => {
+          if let Some(content) = sel.data() {
+            match (ty, content) {
+              (DataType::File, NodeData::File(path)) => println!("{}", path.display()),
+              (DataType::Link, NodeData::Link(link)) => println!("{}", link),
+              _ => Err(NodeError::MismatchDataType)?,
+            }
+          }
+
+          Ok(TreeFeedback::Exit)
+        }
+
+        DataCommand::Set { content } => {
+          let data = match ty {
+            DataType::File => NodeData::file(content),
+            DataType::Link => NodeData::link(content),
+          };
+          sel.set_data(data)?;
+
+          Ok(TreeFeedback::Persist)
+        }
+      }
     }
   }
 }

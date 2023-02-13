@@ -1,5 +1,7 @@
 //! Encoding representation of trees and nodes
 
+use std::path::PathBuf;
+
 use serde::{de::Error as _, Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +63,12 @@ pub struct Node {
   /// Text associated with the node.
   pub(crate) contents: Vec<Text>,
 
+  /// Data file associated with, if any.
+  pub(crate) data: Option<PathBuf>,
+
+  /// Link associated with, if any.
+  pub(crate) url: Option<String>,
+
   /// Children nodes, if any.
   #[serde(default)]
   pub(crate) children: Vec<Node>,
@@ -77,6 +85,8 @@ impl Node {
       icon: String::new(),
       is_expanded,
       contents: vec![Text { text: name.into() }],
+      data: None,
+      url: None,
       children,
     }
   }
