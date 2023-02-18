@@ -6,7 +6,7 @@ use cli::{Command, DataCommand, DataType, InsertMode, CLI};
 use colored::Colorize;
 use config::Config;
 use mind::forest::Forest;
-use mind::node::{Node, NodeData, NodeError};
+use mind::node::{Node, NodeData, NodeError, NodeFilter};
 use mind::{encoding, node::Tree};
 use std::borrow::Cow;
 use std::env::current_dir;
@@ -160,7 +160,13 @@ enum TreeFeedback {
 }
 
 // TODO: extract the « interactive part » into a dedicated module / type.
-fn get_base_sel(config: &Config, cli: &CLI, sel: &Option<String>, tree: &Tree) -> Option<Node> {
+fn get_base_sel(
+  config: &Config,
+  cli: &CLI,
+  sel: &Option<String>,
+  filter: NodeFilter,
+  tree: &Tree,
+) -> Option<Node> {
   sel
     .as_ref()
     .and_then(|path| tree.get_node_by_path(path_iter(&path)))
@@ -177,7 +183,7 @@ fn get_base_sel(config: &Config, cli: &CLI, sel: &Option<String>, tree: &Tree) -
         .spawn()
         .ok()?;
       let mut child_stdin = child.stdin?;
-      write_paths("/", &tree.root(), &mut child_stdin).ok()?; // FIXME
+      write_paths("/", &tree.root(), filter, &mut child_stdin).ok()?; // FIXME
       let path = read_to_string(&mut child.stdout?).ok()?; // FIXME
 
       if path.is_empty() {
@@ -203,8 +209,8 @@ fn get_input_string(prompt: impl AsRef<str>) -> Result<String, PutainDeMerdeErro
 fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, PutainDeMerdeError> {
   match &cli.cmd {
     Command::Insert { mode, sel, name } => {
-      let sel =
-        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
+        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
       let name = match name {
         Some(name) => Cow::from(name),
@@ -216,15 +222,15 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
     }
 
     Command::Remove { sel } => {
-      let sel =
-        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
+        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
       remove(sel)?;
       Ok(TreeFeedback::Persist)
     }
 
     Command::Rename { sel, name } => {
-      let sel =
-        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
+        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
       let name = match name {
         Some(name) => Cow::from(name),
@@ -236,8 +242,8 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
     }
 
     Command::Icon { sel, icon } => {
-      let sel =
-        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
+        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
       let icon = match icon {
         Some(icon) => Cow::from(icon),
@@ -249,36 +255,41 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
     }
 
     Command::Move { mode, sel, dest } => {
-      let sel =
-        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
+        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-      let dest =
-        get_base_sel(config, &cli, &dest, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let dest = get_base_sel(config, &cli, &dest, NodeFilter::default(), tree)
+        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
       move_from_to(sel, dest, *mode)?;
       Ok(TreeFeedback::Persist)
     }
 
-    Command::Paths { sel } => {
+    // TODO: add filtering
+    Command::Paths { sel, ty } => {
       let prefix = sel.as_deref().unwrap_or("/");
-      let sel = tree
-        .get_node_by_path(path_iter(prefix))
+
+      let filter = ty.map(DataType::to_filter).unwrap_or_default();
+
+      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
         .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-      write_paths(prefix, &sel, &mut io::stdout())?;
+
+      write_paths(prefix, &sel, filter, &mut io::stdout())?;
 
       Ok(TreeFeedback::Exit)
     }
 
     Command::Data { sel, ty, cmd } => {
-      let sel =
-        get_base_sel(config, &cli, &sel, tree).ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+      let filter = ty.map(DataType::to_filter).unwrap_or_default();
+      let sel = get_base_sel(config, &cli, &sel, filter, tree)
+        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
       match cmd {
         DataCommand::Get => {
           if let Some(content) = sel.data() {
             match (ty, content) {
-              (DataType::File, NodeData::File(path)) => println!("{}", path.display()),
-              (DataType::Link, NodeData::Link(link)) => println!("{}", link),
+              (None | Some(DataType::File), NodeData::File(path)) => println!("{}", path.display()),
+              (None | Some(DataType::Link), NodeData::Link(link)) => println!("{}", link),
               _ => Err(NodeError::MismatchDataType)?,
             }
           }
@@ -287,10 +298,19 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
         }
 
         DataCommand::Set { content } => {
-          let data = match ty {
-            DataType::File => NodeData::file(content),
-            DataType::Link => NodeData::link(content),
-          };
+          let data = ty
+            .map(|ty| match ty {
+              DataType::File => NodeData::file(content),
+              DataType::Link => NodeData::link(content),
+            })
+            .unwrap_or_else(|| {
+              if content.is_empty() {
+                // TODO: we need to create a file / something here
+                NodeData::file(content)
+              } else {
+                NodeData::link(content)
+              }
+            });
           sel.set_data(data)?;
 
           Ok(TreeFeedback::Persist)
@@ -304,9 +324,10 @@ fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, Put
 fn write_paths(
   prefix: &str,
   base_sel: &Node,
+  filter: NodeFilter,
   writer: &mut impl Write,
 ) -> Result<(), PutainDeMerdeError> {
-  for path in base_sel.paths(prefix) {
+  for path in base_sel.paths(prefix, filter) {
     writeln!(writer, "{}", path).map_err(PutainDeMerdeError::CannotWritePath)?;
   }
 

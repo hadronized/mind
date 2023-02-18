@@ -434,20 +434,28 @@ impl Node {
     node.is_expanded = !node.is_expanded;
   }
 
-  pub fn paths(&self, prefix: impl AsRef<str>) -> Vec<String> {
+  pub fn paths(&self, prefix: impl AsRef<str>, filter: NodeFilter) -> Vec<String> {
     let prefix = prefix.as_ref();
-    let mut all_paths = vec![prefix.to_owned()];
+    let mut all_paths = Vec::new();
+
+    if filter.accepts(self) {
+      all_paths.push(prefix.to_owned());
+    }
 
     let prefix = if prefix == "/" { "" } else { prefix };
-    self.paths_rec(prefix, &mut all_paths);
+    self.paths_rec(prefix, &mut all_paths, filter);
     all_paths
   }
 
-  fn paths_rec(&self, parent: &str, paths: &mut Vec<String>) {
+  fn paths_rec(&self, parent: &str, paths: &mut Vec<String>, filter: NodeFilter) {
     for child in &self.inner.borrow().children {
       let path = format!("{parent}/{name}", name = child.name());
-      paths.push(path.clone());
-      child.paths_rec(&path, paths);
+
+      if filter.accepts(child) {
+        paths.push(path.clone());
+      }
+
+      child.paths_rec(&path, paths, filter);
     }
   }
 }
@@ -475,6 +483,26 @@ impl NodeData {
 
   pub fn link(link: impl Into<String>) -> Self {
     NodeData::Link(link.into())
+  }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NodeFilter {
+  #[default]
+  Always,
+  FileOrLink,
+  FileOnly,
+  LinkOnly,
+}
+
+impl NodeFilter {
+  fn accepts(&self, node: &Node) -> bool {
+    match self {
+      NodeFilter::Always => true,
+      NodeFilter::FileOrLink => node.inner.borrow().data.is_some(),
+      NodeFilter::FileOnly => matches!(node.inner.borrow().data, Some(NodeData::File(..))),
+      NodeFilter::LinkOnly => matches!(node.inner.borrow().data, Some(NodeData::Link(..))),
+    }
   }
 }
 
@@ -506,7 +534,7 @@ pub enum NodeError {
 mod tests {
   use crate::{
     encoding::{self, TreeType, Version},
-    node::{Node, NodeData, NodeError, Tree},
+    node::{Node, NodeData, NodeError, NodeFilter, Tree},
   };
 
   #[test]
@@ -997,7 +1025,10 @@ mod tests {
     x.insert_bottom(Node::new("b", ""));
     x.insert_bottom(Node::new("c", ""));
 
-    assert_eq!(node.paths(""), vec!["", "/x", "/x/a", "/x/b", "/x/c", "/y"]);
+    assert_eq!(
+      node.paths("", NodeFilter::Always),
+      vec!["", "/x", "/x/a", "/x/b", "/x/c", "/y"],
+    );
   }
 
   #[test]

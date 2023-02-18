@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use mind::node::NodeFilter;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -98,6 +99,10 @@ pub enum Command {
     /// Select a base node to operate on.
     #[arg(short, long)]
     sel: Option<String>,
+
+    /// Data type to use for the node.
+    #[arg(name = "type", short, long, value_enum)]
+    ty: Option<DataType>,
   },
 
   /// Get associated data with a node.
@@ -108,7 +113,7 @@ pub enum Command {
 
     /// Data type to use for the node.
     #[arg(name = "type", short, long, value_enum)]
-    ty: DataType,
+    ty: Option<DataType>,
 
     #[command(subcommand)]
     cmd: DataCommand,
@@ -150,4 +155,13 @@ pub enum InsertMode {
 pub enum DataType {
   File,
   Link,
+}
+
+impl DataType {
+  pub fn to_filter(self) -> NodeFilter {
+    match self {
+      DataType::File => NodeFilter::FileOnly,
+      DataType::Link => NodeFilter::LinkOnly,
+    }
+  }
 }
