@@ -10,31 +10,76 @@ use mind::node::{Node, NodeData, NodeError, NodeFilter};
 use mind::{encoding, node::Tree};
 use std::borrow::Cow;
 use std::env::current_dir;
-use std::error::Error as StdError;
-use std::fmt::Display;
 use std::io::{read_to_string, stdin, stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::{fs, io};
 use thiserror::Error;
 
-fn main() -> Result<(), Box<dyn StdError>> {
-  let cli = CLI::parse();
+/// The top-level type holding everything that the application is about.
+struct App {
+  config: Config,
+}
 
-  // TODO: get config from env var / XDG / whatever
-  let (config, config_err) = Config::load_or_default();
-  if let Some(config_err) = config_err {
-    err_msg(format!("error while reading configuration: {}", config_err));
+impl App {
+  fn new() -> Self {
+    let config = Self::load_config();
+
+    Self { config }
   }
 
-  if let Some(ref path) = cli.path {
-    // run on a specific Mind tree
+  fn load_config() -> Config {
+    // TODO: get config from env var / XDG / whatever
+    let (config, config_err) = Config::load_or_default();
+    if let Some(config_err) = config_err {
+      eprintln!(
+        "{}",
+        format!("error while reading configuration: {}", config_err).red()
+      );
+    }
+
+    config
+  }
+
+  /// Start the application by adding an error handler layer.
+  fn with_error_handler(self) {
+    match self.run() {
+      Err(err) => {
+        eprintln!("{}", err.to_string().red());
+      }
+
+      _ => (),
+    }
+  }
+
+  /// Start and dispatch the application by looking at the CLI, config, etc.
+  fn run(self) -> Result<(), PutainDeMerdeError> {
+    let cli = CLI::parse();
+
+    // check if we are running on a specific path
+    if let Some(ref path) = cli.path {
+      self.run_specific_tree(cli.interactive, cli.cmd, path)?;
+      return Ok(());
+    }
+
+    // we are running config-based
+    self.run_config_based(cli.interactive, cli.cmd, cli.cwd)?;
+
+    Ok(())
+  }
+
+  fn run_specific_tree(
+    &self,
+    interactive: bool,
+    cmd: Command,
+    path: &Path,
+  ) -> Result<(), PutainDeMerdeError> {
     let tree: encoding::Tree =
       serde_json::from_str(&fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadTree)?)
         .map_err(PutainDeMerdeError::CannotDeserializeTree)?;
     let tree = Tree::from_encoding(tree);
 
-    match with_tree(&config, cli, &tree)? {
+    match self.dispatch_cmd(interactive, cmd, &tree)? {
       TreeFeedback::Persist => {
         // TODO: persist specific tree to path
       }
@@ -42,55 +87,295 @@ fn main() -> Result<(), Box<dyn StdError>> {
       TreeFeedback::Exit => (),
     }
 
-    return Ok(());
+    Ok(())
   }
 
-  let forest_path = config
-    .persistence
-    .forest_path()
-    .ok_or(PutainDeMerdeError::NoForestPath)?;
+  fn run_config_based(
+    &self,
+    interactive: bool,
+    cmd: Command,
+    cwd: bool,
+  ) -> Result<(), PutainDeMerdeError> {
+    let forest_path = self
+      .config
+      .persistence
+      .forest_path()
+      .ok_or(PutainDeMerdeError::NoForestPath)?;
 
-  let forest = load_forest(&forest_path).or_else(|e| match e {
-    PutainDeMerdeError::NoForestPersisted => {
-      // no forest persisted yet, create a new one…
-      let forest = Forest::new(Tree::new("Main", " "));
+    let forest = load_forest(&forest_path).or_else(|e| match e {
+      PutainDeMerdeError::NoForestPersisted => {
+        // no forest persisted yet, create a new one…
+        let forest = Forest::new(Tree::new("Main", " "));
 
-      // … and persist it
-      persist_forest(&forest, &forest_path)?;
+        // … and persist it
+        persist_forest(&forest, &forest_path)?;
 
-      Ok(forest)
-    }
+        Ok(forest)
+      }
 
-    _ => Err(e),
-  })?;
+      _ => Err(e),
+    })?;
 
-  let feedback = if cli.cwd {
-    // run by looking up the CWD
-    let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
-
-    // TODO: check whether we want a local tree or a global one
-    with_tree(
-      &config,
-      cli,
+    let tree = if cwd {
+      // run by looking up the CWD
+      let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
       forest
         .cwd_tree(&cwd)
-        .ok_or_else(|| PutainDeMerdeError::NoCWDTree(cwd))?,
-    )?
-  } else {
-    // use the main tree
-    with_tree(&config, cli, forest.main_tree())?
-  };
+        .ok_or_else(|| PutainDeMerdeError::NoCWDTree(cwd))?
+    } else {
+      forest.main_tree()
+    };
 
-  match feedback {
-    TreeFeedback::Persist => persist_forest(&forest, forest_path)?,
-    TreeFeedback::Exit => (),
+    // TODO: check whether we want a local tree or a global one
+    let feedback = self.dispatch_cmd(interactive, cmd, tree)?;
+    match feedback {
+      TreeFeedback::Persist => persist_forest(&forest, forest_path)?,
+      TreeFeedback::Exit => (),
+    }
+
+    Ok(())
   }
 
-  Ok(())
+  // TODO: extract the « interactive part » into a dedicated module / type.
+  fn get_base_sel(
+    &self,
+    interactive: bool,
+    sel: &Option<String>,
+    filter: NodeFilter,
+    tree: &Tree,
+  ) -> Option<Node> {
+    sel
+      .as_ref()
+      .and_then(|path| tree.get_node_by_path(path_iter(&path)))
+      .or_else(|| {
+        // no explicit selection; try to use a fuzzy finder
+        if !interactive {
+          return None;
+        }
+
+        let program = self.config.interactive.fuzzy_term_program()?;
+        let child = std::process::Command::new(program)
+          .stdin(Stdio::piped())
+          .stdout(Stdio::piped())
+          .spawn()
+          .ok()?;
+        let mut child_stdin = child.stdin?;
+        write_paths("/", &tree.root(), filter, &mut child_stdin).ok()?; // FIXME
+        let path = read_to_string(&mut child.stdout?).ok()?; // FIXME
+
+        if path.is_empty() {
+          return None;
+        }
+
+        tree.get_node_by_path(path_iter(path.trim()))
+      })
+  }
+
+  // TODO: extract the « interactive part » into a dedicated module / type.
+  fn get_input_string(&self, prompt: impl AsRef<str>) -> Result<String, PutainDeMerdeError> {
+    print!("{}", prompt.as_ref());
+    stdout().flush().map_err(PutainDeMerdeError::UserInput)?;
+
+    let mut input = String::new();
+    let _ = stdin()
+      .read_line(&mut input)
+      .map_err(PutainDeMerdeError::UserInput)?;
+    Ok(input)
+  }
+
+  fn dispatch_cmd(
+    &self,
+    interactive: bool,
+    cmd: Command,
+    tree: &Tree,
+  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    match cmd {
+      Command::Insert { mode, sel, name } => {
+        self.run_insert_cmd(interactive, tree, mode, sel, name)
+      }
+
+      Command::Remove { sel } => self.run_remove_cmd(interactive, tree, sel),
+
+      Command::Rename { sel, name } => self.run_rename_cmd(interactive, tree, sel, name),
+
+      Command::Icon { sel, icon } => self.run_icon_cmd(interactive, tree, sel, icon),
+
+      Command::Move { mode, sel, dest } => self.run_move_cmd(interactive, tree, mode, sel, dest),
+
+      // TODO: add filtering
+      Command::Paths { sel, ty } => self.run_paths_cmd(interactive, tree, sel, ty),
+
+      Command::Data { sel, ty, cmd } => self.run_data_cmd(interactive, tree, sel, ty, cmd),
+    }
+  }
+
+  fn run_insert_cmd(
+    &self,
+    interactive: bool,
+    tree: &Tree,
+    mode: InsertMode,
+    sel: Option<String>,
+    name: Option<String>,
+  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    let sel = self
+      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+    let name = match name {
+      Some(name) => Cow::from(name),
+      None => Cow::from(self.get_input_string("New node name > ")?),
+    };
+
+    insert(&sel, Node::new(name.trim(), ""), mode)?;
+    Ok(TreeFeedback::Persist)
+  }
+
+  fn run_remove_cmd(
+    &self,
+    interactive: bool,
+    tree: &Tree,
+    sel: Option<String>,
+  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    let sel = self
+      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+    remove(sel)?;
+    Ok(TreeFeedback::Persist)
+  }
+
+  fn run_rename_cmd(
+    &self,
+    interactive: bool,
+    tree: &Tree,
+    sel: Option<String>,
+    name: Option<String>,
+  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    let sel = self
+      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+    let name = match name {
+      Some(name) => Cow::from(name),
+      None => Cow::from(self.get_input_string("Rename node > ")?),
+    };
+
+    rename(sel, name.trim())?;
+    Ok(TreeFeedback::Persist)
+  }
+
+  fn run_icon_cmd(
+    &self,
+    interactive: bool,
+    tree: &Tree,
+    sel: Option<String>,
+    icon: Option<String>,
+  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    let sel = self
+      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+    let icon = match icon {
+      Some(icon) => Cow::from(icon),
+      None => Cow::from(self.get_input_string("Change node icon > ")?),
+    };
+
+    change_icon(sel, icon.trim());
+    Ok(TreeFeedback::Persist)
+  }
+
+  fn run_move_cmd(
+    &self,
+    interactive: bool,
+    tree: &Tree,
+    mode: InsertMode,
+    sel: Option<String>,
+    dest: Option<String>,
+  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    let sel = self
+      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+    let dest = self
+      .get_base_sel(interactive, &dest, NodeFilter::default(), tree)
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+    move_from_to(sel, dest, mode)?;
+    Ok(TreeFeedback::Persist)
+  }
+
+  fn run_paths_cmd(
+    &self,
+    interactive: bool,
+    tree: &Tree,
+    sel: Option<String>,
+    ty: Option<DataType>,
+  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    let prefix = sel.as_deref().unwrap_or("/");
+
+    let filter = ty.map(DataType::to_filter).unwrap_or_default();
+
+    let sel = self
+      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+    write_paths(prefix, &sel, filter, &mut io::stdout())?;
+
+    Ok(TreeFeedback::Exit)
+  }
+
+  fn run_data_cmd(
+    &self,
+    interactive: bool,
+    tree: &Tree,
+    sel: Option<String>,
+    ty: Option<DataType>,
+    cmd: DataCommand,
+  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    let filter = ty.map(DataType::to_filter).unwrap_or_default();
+    let sel = self
+      .get_base_sel(interactive, &sel, filter, tree)
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+    match cmd {
+      DataCommand::Get => {
+        if let Some(content) = sel.data() {
+          match (ty, content) {
+            (None | Some(DataType::File), NodeData::File(path)) => {
+              println!("{}", path.display())
+            }
+            (None | Some(DataType::Link), NodeData::Link(link)) => println!("{}", link),
+            _ => Err(NodeError::MismatchDataType)?,
+          }
+        }
+
+        Ok(TreeFeedback::Exit)
+      }
+
+      DataCommand::Set { content } => {
+        let data = ty
+          .map(|ty| match ty {
+            DataType::File => NodeData::file(&content),
+            DataType::Link => NodeData::link(&content),
+          })
+          .unwrap_or_else(|| {
+            if content.is_empty() {
+              // TODO: we need to create a file / something here
+              NodeData::file(content)
+            } else {
+              NodeData::link(content)
+            }
+          });
+        sel.set_data(data)?;
+
+        Ok(TreeFeedback::Persist)
+      }
+    }
+  }
 }
 
-fn err_msg(msg: impl Display) {
-  eprintln!("{}", msg.to_string().red());
+fn main() {
+  let app = App::new();
+  app.with_error_handler();
 }
 
 #[derive(Debug, Error)]
@@ -157,167 +442,6 @@ pub enum PutainDeMerdeError {
 enum TreeFeedback {
   Exit,
   Persist,
-}
-
-// TODO: extract the « interactive part » into a dedicated module / type.
-fn get_base_sel(
-  config: &Config,
-  cli: &CLI,
-  sel: &Option<String>,
-  filter: NodeFilter,
-  tree: &Tree,
-) -> Option<Node> {
-  sel
-    .as_ref()
-    .and_then(|path| tree.get_node_by_path(path_iter(&path)))
-    .or_else(|| {
-      // no explicit selection; try to use a fuzzy finder
-      if !cli.interactive {
-        return None;
-      }
-
-      let program = config.interactive.fuzzy_term_program()?;
-      let child = std::process::Command::new(program)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-      let mut child_stdin = child.stdin?;
-      write_paths("/", &tree.root(), filter, &mut child_stdin).ok()?; // FIXME
-      let path = read_to_string(&mut child.stdout?).ok()?; // FIXME
-
-      if path.is_empty() {
-        return None;
-      }
-
-      tree.get_node_by_path(path_iter(path.trim()))
-    })
-}
-
-// TODO: extract the « interactive part » into a dedicated module / type.
-fn get_input_string(prompt: impl AsRef<str>) -> Result<String, PutainDeMerdeError> {
-  print!("{}", prompt.as_ref());
-  stdout().flush().map_err(PutainDeMerdeError::UserInput)?;
-
-  let mut input = String::new();
-  let _ = stdin()
-    .read_line(&mut input)
-    .map_err(PutainDeMerdeError::UserInput)?;
-  Ok(input)
-}
-
-fn with_tree(config: &Config, cli: CLI, tree: &Tree) -> Result<TreeFeedback, PutainDeMerdeError> {
-  match &cli.cmd {
-    Command::Insert { mode, sel, name } => {
-      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-
-      let name = match name {
-        Some(name) => Cow::from(name),
-        None => Cow::from(get_input_string("New node name > ")?),
-      };
-
-      insert(&sel, Node::new(name.trim(), ""), *mode)?;
-      Ok(TreeFeedback::Persist)
-    }
-
-    Command::Remove { sel } => {
-      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-      remove(sel)?;
-      Ok(TreeFeedback::Persist)
-    }
-
-    Command::Rename { sel, name } => {
-      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-
-      let name = match name {
-        Some(name) => Cow::from(name),
-        None => Cow::from(get_input_string("Rename node > ")?),
-      };
-
-      rename(sel, name.trim())?;
-      Ok(TreeFeedback::Persist)
-    }
-
-    Command::Icon { sel, icon } => {
-      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-
-      let icon = match icon {
-        Some(icon) => Cow::from(icon),
-        None => Cow::from(get_input_string("Change node icon > ")?),
-      };
-
-      change_icon(sel, icon.trim());
-      Ok(TreeFeedback::Persist)
-    }
-
-    Command::Move { mode, sel, dest } => {
-      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-
-      let dest = get_base_sel(config, &cli, &dest, NodeFilter::default(), tree)
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-
-      move_from_to(sel, dest, *mode)?;
-      Ok(TreeFeedback::Persist)
-    }
-
-    // TODO: add filtering
-    Command::Paths { sel, ty } => {
-      let prefix = sel.as_deref().unwrap_or("/");
-
-      let filter = ty.map(DataType::to_filter).unwrap_or_default();
-
-      let sel = get_base_sel(config, &cli, &sel, NodeFilter::default(), tree)
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-
-      write_paths(prefix, &sel, filter, &mut io::stdout())?;
-
-      Ok(TreeFeedback::Exit)
-    }
-
-    Command::Data { sel, ty, cmd } => {
-      let filter = ty.map(DataType::to_filter).unwrap_or_default();
-      let sel = get_base_sel(config, &cli, &sel, filter, tree)
-        .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-
-      match cmd {
-        DataCommand::Get => {
-          if let Some(content) = sel.data() {
-            match (ty, content) {
-              (None | Some(DataType::File), NodeData::File(path)) => println!("{}", path.display()),
-              (None | Some(DataType::Link), NodeData::Link(link)) => println!("{}", link),
-              _ => Err(NodeError::MismatchDataType)?,
-            }
-          }
-
-          Ok(TreeFeedback::Exit)
-        }
-
-        DataCommand::Set { content } => {
-          let data = ty
-            .map(|ty| match ty {
-              DataType::File => NodeData::file(content),
-              DataType::Link => NodeData::link(content),
-            })
-            .unwrap_or_else(|| {
-              if content.is_empty() {
-                // TODO: we need to create a file / something here
-                NodeData::file(content)
-              } else {
-                NodeData::link(content)
-              }
-            });
-          sel.set_data(data)?;
-
-          Ok(TreeFeedback::Persist)
-        }
-      }
-    }
-  }
 }
 
 /// Write paths to the provided writer.
