@@ -4,7 +4,7 @@ use crate::encoding::{self, TreeType};
 use serde::{Deserialize, Serialize};
 use std::{
   cell::RefCell,
-  io,
+  io::{self, Write},
   path::PathBuf,
   rc::{Rc, Weak},
 };
@@ -458,6 +458,20 @@ impl Node {
       child.paths_rec(&path, paths, filter);
     }
   }
+
+  /// Write paths to the provided writer.
+  pub fn write_paths(
+    &self,
+    prefix: &str,
+    filter: NodeFilter,
+    writer: &mut impl Write,
+  ) -> Result<(), NodeError> {
+    for path in self.paths(prefix, filter) {
+      writeln!(writer, "{}", path).map_err(NodeError::CannotWritePaths)?;
+    }
+
+    Ok(())
+  }
 }
 
 #[derive(Clone, Debug)]
@@ -528,6 +542,16 @@ pub enum NodeError {
 
   #[error("cannot create associated data file: {0}")]
   CannotCreateDataFile(io::Error),
+
+  #[error("cannot write paths")]
+  CannotWritePaths(io::Error),
+}
+
+/// Split a string in the form of `/NodeA/NodeB/…` into an iterator of path segment.
+///
+/// Use that function to pass to various tree and node API functions expecting a path.
+pub fn path_iter<'a>(path: &'a str) -> impl Iterator<Item = &'a str> {
+  path.split('/').filter(|frag| !frag.trim().is_empty())
 }
 
 #[cfg(test)]
