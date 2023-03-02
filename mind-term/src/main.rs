@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod ui;
 
 use clap::Parser;
 use cli::{Command, DataCommand, DataType, InsertMode, CLI};
@@ -10,22 +11,23 @@ use mind::node::{Node, NodeData, NodeError, NodeFilter};
 use mind::{encoding, node::Tree};
 use std::borrow::Cow;
 use std::env::current_dir;
-use std::io::{read_to_string, stdin, stdout, Write};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::{fs, io};
 use thiserror::Error;
+use ui::{UIError, UI};
 
 /// The top-level type holding everything that the application is about.
 struct App {
   config: Config,
+  ui: UI,
 }
 
 impl App {
   fn new() -> Self {
     let config = Self::load_config();
+    let ui = UI::new(config.interactive.fuzzy_term_program().map(Into::into));
 
-    Self { config }
+    Self { config, ui }
   }
 
   fn load_config() -> Config {
@@ -136,53 +138,6 @@ impl App {
     Ok(())
   }
 
-  // TODO: extract the « interactive part » into a dedicated module / type.
-  fn get_base_sel(
-    &self,
-    interactive: bool,
-    sel: &Option<String>,
-    filter: NodeFilter,
-    tree: &Tree,
-  ) -> Option<Node> {
-    sel
-      .as_ref()
-      .and_then(|path| tree.get_node_by_path(path_iter(&path)))
-      .or_else(|| {
-        // no explicit selection; try to use a fuzzy finder
-        if !interactive {
-          return None;
-        }
-
-        let program = self.config.interactive.fuzzy_term_program()?;
-        let child = std::process::Command::new(program)
-          .stdin(Stdio::piped())
-          .stdout(Stdio::piped())
-          .spawn()
-          .ok()?;
-        let mut child_stdin = child.stdin?;
-        write_paths("/", &tree.root(), filter, &mut child_stdin).ok()?; // FIXME
-        let path = read_to_string(&mut child.stdout?).ok()?; // FIXME
-
-        if path.is_empty() {
-          return None;
-        }
-
-        tree.get_node_by_path(path_iter(path.trim()))
-      })
-  }
-
-  // TODO: extract the « interactive part » into a dedicated module / type.
-  fn get_input_string(&self, prompt: impl AsRef<str>) -> Result<String, PutainDeMerdeError> {
-    print!("{}", prompt.as_ref());
-    stdout().flush().map_err(PutainDeMerdeError::UserInput)?;
-
-    let mut input = String::new();
-    let _ = stdin()
-      .read_line(&mut input)
-      .map_err(PutainDeMerdeError::UserInput)?;
-    Ok(input)
-  }
-
   fn dispatch_cmd(
     &self,
     interactive: bool,
@@ -218,12 +173,13 @@ impl App {
     name: Option<String>,
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
+      .ui
       .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     let name = match name {
       Some(name) => Cow::from(name),
-      None => Cow::from(self.get_input_string("New node name > ")?),
+      None => Cow::from(self.ui.get_input_string("New node name > ")?),
     };
 
     insert(&sel, Node::new(name.trim(), ""), mode)?;
@@ -237,6 +193,7 @@ impl App {
     sel: Option<String>,
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
+      .ui
       .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
     remove(sel)?;
@@ -251,12 +208,13 @@ impl App {
     name: Option<String>,
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
+      .ui
       .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     let name = match name {
       Some(name) => Cow::from(name),
-      None => Cow::from(self.get_input_string("Rename node > ")?),
+      None => Cow::from(self.ui.get_input_string("Rename node > ")?),
     };
 
     rename(sel, name.trim())?;
@@ -271,12 +229,13 @@ impl App {
     icon: Option<String>,
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
+      .ui
       .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     let icon = match icon {
       Some(icon) => Cow::from(icon),
-      None => Cow::from(self.get_input_string("Change node icon > ")?),
+      None => Cow::from(self.ui.get_input_string("Change node icon > ")?),
     };
 
     change_icon(sel, icon.trim());
@@ -292,10 +251,12 @@ impl App {
     dest: Option<String>,
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
+      .ui
       .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     let dest = self
+      .ui
       .get_base_sel(interactive, &dest, NodeFilter::default(), tree)
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
@@ -315,10 +276,11 @@ impl App {
     let filter = ty.map(DataType::to_filter).unwrap_or_default();
 
     let sel = self
+      .ui
       .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    write_paths(prefix, &sel, filter, &mut io::stdout())?;
+    sel.write_paths(prefix, filter, &mut io::stdout())?;
 
     Ok(TreeFeedback::Exit)
   }
@@ -333,6 +295,7 @@ impl App {
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let filter = ty.map(DataType::to_filter).unwrap_or_default();
     let sel = self
+      .ui
       .get_base_sel(interactive, &sel, filter, tree)
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
@@ -431,8 +394,8 @@ pub enum PutainDeMerdeError {
   #[error("cannot write a path")]
   CannotWritePath(io::Error),
 
-  #[error("cannot get input from user")]
-  UserInput(std::io::Error),
+  #[error("UI error: {0}")]
+  UIError(#[from] UIError),
 }
 
 /// Feedback returned by operations dealing with trees.
@@ -442,20 +405,6 @@ pub enum PutainDeMerdeError {
 enum TreeFeedback {
   Exit,
   Persist,
-}
-
-/// Write paths to the provided writer.
-fn write_paths(
-  prefix: &str,
-  base_sel: &Node,
-  filter: NodeFilter,
-  writer: &mut impl Write,
-) -> Result<(), PutainDeMerdeError> {
-  for path in base_sel.paths(prefix, filter) {
-    writeln!(writer, "{}", path).map_err(PutainDeMerdeError::CannotWritePath)?;
-  }
-
-  Ok(())
 }
 
 /// Insert a node into a selected one.
@@ -504,10 +453,6 @@ fn move_from_to(src: Node, dest: Node, mode: InsertMode) -> Result<(), PutainDeM
     InsertMode::Before => Ok(dest.move_before(src)?),
     InsertMode::After => Ok(dest.move_after(src)?),
   }
-}
-
-fn path_iter<'a>(path: &'a str) -> impl Iterator<Item = &'a str> {
-  path.split('/').filter(|frag| !frag.trim().is_empty())
 }
 
 fn load_forest(path: impl AsRef<Path>) -> Result<Forest, PutainDeMerdeError> {
