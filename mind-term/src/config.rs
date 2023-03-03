@@ -88,10 +88,18 @@ impl PersistenceConfig {
 pub struct InteractiveConfig {
   /// Fuzzy finder to use in terminal mode.
   fuzzy_term_program: Option<String>,
+
+  /// Switch / option name to set the prompt. The prompt will be passed after the switch. So if you set this option
+  /// to e.g. `--prompt`, we will pass `--prompt "Actual prompt"` to your fuzzy program.
+  fuzzy_term_prompt_opt: Option<String>,
 }
 
 impl InteractiveConfig {
   pub fn fuzzy_term_program(&self) -> Option<&str> {
     self.fuzzy_term_program.as_deref()
+  }
+
+  pub fn fuzzy_term_prompt_opt(&self) -> Option<&str> {
+    self.fuzzy_term_prompt_opt.as_deref()
   }
 }

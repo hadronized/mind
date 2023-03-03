@@ -1,5 +1,6 @@
 //! User Interface types and functions
 
+use crate::config::Config;
 use mind::node::{path_iter, Node, NodeFilter, Tree};
 use std::{
   io::{self, read_to_string, stdin, stdout, Write},
@@ -10,16 +11,20 @@ use thiserror::Error;
 #[derive(Debug)]
 pub struct UI {
   fuzzy_term_program: Option<String>,
+  fuzzy_term_prompt_opt: Option<String>,
 }
 
 impl UI {
-  pub fn new(fuzzy_term_program: Option<String>) -> Self {
-    Self { fuzzy_term_program }
+  pub fn new(config: &Config) -> Self {
+    Self {
+      fuzzy_term_program: config.interactive.fuzzy_term_program().map(Into::into),
+      fuzzy_term_prompt_opt: config.interactive.fuzzy_term_prompt_opt().map(Into::into),
+    }
   }
 
   pub fn get_base_sel(
     &self,
-    interactive: bool,
+    picker_opts: PickerOptions,
     sel: &Option<String>,
     filter: NodeFilter,
     tree: &Tree,
@@ -29,17 +34,25 @@ impl UI {
         .as_ref()
         .and_then(|path| tree.get_node_by_path(path_iter(&path)))
         .or_else(|| {
-          // no explicit selection; try to use a fuzzy finder
-          if !interactive {
-            return None;
-          }
+          let prompt = match picker_opts {
+            // no explicit selection; try to use a fuzzy finder
+            PickerOptions::NonInteractive => return None,
+            PickerOptions::Interactive { prompt } => prompt,
+          };
 
           let program = self.fuzzy_term_program.as_ref()?;
-          let child = std::process::Command::new(program)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .ok()?;
+          let mut child = std::process::Command::new(program);
+          child.stdin(Stdio::piped()).stdout(Stdio::piped());
+
+          match self.fuzzy_term_prompt_opt {
+            Some(ref prompt_prefix) => {
+              child.arg(format!("{} {}", prompt_prefix, prompt));
+            }
+
+            _ => (),
+          }
+
+          let child = child.spawn().ok()?;
           let mut child_stdin = child.stdin?;
           tree
             .root()
@@ -70,4 +83,21 @@ impl UI {
 pub enum UIError {
   #[error("cannot get user input: {0}")]
   UserInput(io::Error),
+}
+
+#[derive(Debug)]
+pub enum PickerOptions {
+  NonInteractive,
+  Interactive { prompt: &'static str },
+}
+
+impl PickerOptions {
+  /// Check whether we want an interactive picker. If we do, use the provided prompt.
+  pub fn either(interactive: bool, prompt: &'static str) -> Self {
+    if interactive {
+      Self::Interactive { prompt }
+    } else {
+      Self::NonInteractive
+    }
+  }
 }

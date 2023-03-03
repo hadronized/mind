@@ -25,7 +25,7 @@ struct App {
 impl App {
   fn new() -> Self {
     let config = Self::load_config();
-    let ui = UI::new(config.interactive.fuzzy_term_program().map(Into::into));
+    let ui = UI::new(&config);
 
     Self { config, ui }
   }
@@ -138,6 +138,7 @@ impl App {
     Ok(())
   }
 
+  /// FOO
   fn dispatch_cmd(
     &self,
     interactive: bool,
@@ -174,12 +175,17 @@ impl App {
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
       .ui
-      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .get_base_sel(
+        ui::PickerOptions::either(interactive, "Insert in: "),
+        &sel,
+        NodeFilter::default(),
+        tree,
+      )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     let name = match name {
       Some(name) => Cow::from(name),
-      None => Cow::from(self.ui.get_input_string("New node name > ")?),
+      None => Cow::from(self.ui.get_input_string("New name: ")?),
     };
 
     insert(&sel, Node::new(name.trim(), ""), mode)?;
@@ -194,7 +200,12 @@ impl App {
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
       .ui
-      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .get_base_sel(
+        ui::PickerOptions::either(interactive, "Remove: "),
+        &sel,
+        NodeFilter::default(),
+        tree,
+      )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
     remove(sel)?;
     Ok(TreeFeedback::Persist)
@@ -209,12 +220,17 @@ impl App {
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
       .ui
-      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .get_base_sel(
+        ui::PickerOptions::either(interactive, "Rename: "),
+        &sel,
+        NodeFilter::default(),
+        tree,
+      )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     let name = match name {
       Some(name) => Cow::from(name),
-      None => Cow::from(self.ui.get_input_string("Rename node > ")?),
+      None => Cow::from(self.ui.get_input_string("New node name: ")?),
     };
 
     rename(sel, name.trim())?;
@@ -230,7 +246,12 @@ impl App {
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
       .ui
-      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .get_base_sel(
+        ui::PickerOptions::either(interactive, "Change icon: "),
+        &sel,
+        NodeFilter::default(),
+        tree,
+      )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     let icon = match icon {
@@ -252,12 +273,22 @@ impl App {
   ) -> Result<TreeFeedback, PutainDeMerdeError> {
     let sel = self
       .ui
-      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .get_base_sel(
+        ui::PickerOptions::either(interactive, "Source node: "),
+        &sel,
+        NodeFilter::default(),
+        tree,
+      )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     let dest = self
       .ui
-      .get_base_sel(interactive, &dest, NodeFilter::default(), tree)
+      .get_base_sel(
+        ui::PickerOptions::either(interactive, "Destination node: "),
+        &dest,
+        NodeFilter::default(),
+        tree,
+      )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     move_from_to(sel, dest, mode)?;
@@ -277,7 +308,12 @@ impl App {
 
     let sel = self
       .ui
-      .get_base_sel(interactive, &sel, NodeFilter::default(), tree)
+      .get_base_sel(
+        ui::PickerOptions::either(interactive, "Get paths: "),
+        &sel,
+        NodeFilter::default(),
+        tree,
+      )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     sel.write_paths(prefix, filter, &mut io::stdout())?;
@@ -296,7 +332,12 @@ impl App {
     let filter = ty.map(DataType::to_filter).unwrap_or_default();
     let sel = self
       .ui
-      .get_base_sel(interactive, &sel, filter, tree)
+      .get_base_sel(
+        ui::PickerOptions::either(interactive, "Get data: "),
+        &sel,
+        filter,
+        tree,
+      )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     match cmd {
