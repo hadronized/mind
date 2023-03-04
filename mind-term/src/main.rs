@@ -11,23 +11,28 @@ use mind::node::{Node, NodeData, NodeError, NodeFilter};
 use mind::{encoding, node::Tree};
 use std::borrow::Cow;
 use std::env::current_dir;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 use thiserror::Error;
 use ui::{UIError, UI};
 
+const PROJECT_ICON: &'static str = " ";
+
 /// The top-level type holding everything that the application is about.
 struct App {
   config: Config,
+  cli: CLI,
   ui: UI,
 }
 
 impl App {
   fn new() -> Self {
     let config = Self::load_config();
+    let cli = CLI::parse();
     let ui = UI::new(&config);
 
-    Self { config, ui }
+    Self { config, cli, ui }
   }
 
   fn load_config() -> Config {
@@ -43,6 +48,74 @@ impl App {
     config
   }
 
+  fn load_tree(path: impl AsRef<Path>) -> Result<Tree, PutainDeMerdeError> {
+    let path = path.as_ref();
+
+    if !path.exists() {
+      return Err(PutainDeMerdeError::NoTreePersisted);
+    }
+
+    let tree: encoding::Tree =
+      serde_json::from_str(&fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadTree)?)
+        .map_err(PutainDeMerdeError::CannotDeserializeTree)?;
+    Ok(Tree::from_encoding(tree))
+  }
+
+  fn load_forest(&self) -> Result<Forest, PutainDeMerdeError> {
+    let path = self
+      .config
+      .persistence
+      .forest_path()
+      .ok_or(PutainDeMerdeError::NoForestPath)?;
+
+    if !path.exists() {
+      return Err(PutainDeMerdeError::NoForestPersisted);
+    }
+
+    let contents = std::fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadForest)?;
+    serde_json::from_str(&contents).map_err(PutainDeMerdeError::CannotDeserializeForest)
+  }
+
+  fn persist_tree_to_path(tree: &Tree, path: impl AsRef<Path>) -> Result<(), PutainDeMerdeError> {
+    let path = path.as_ref();
+
+    // ensure all parent directories are created
+    match path.parent() {
+      Some(parent) => {
+        std::fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
+      }
+
+      _ => (),
+    }
+
+    let serialized =
+      serde_json::to_string(tree).map_err(PutainDeMerdeError::CannotSerializeTree)?;
+    std::fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteTree)?;
+    Ok(())
+  }
+
+  fn persist_forest(&self, forest: &Forest) -> Result<(), PutainDeMerdeError> {
+    let path = self
+      .config
+      .persistence
+      .forest_path()
+      .ok_or(PutainDeMerdeError::NoForestPath)?;
+
+    // ensure all parent directories are created
+    match path.parent() {
+      Some(parent) => {
+        std::fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
+      }
+
+      _ => (),
+    }
+
+    let serialized =
+      serde_json::to_string(forest).map_err(PutainDeMerdeError::CannotSerializeForest)?;
+    std::fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteForest)?;
+    Ok(())
+  }
+
   /// Start the application by adding an error handler layer.
   fn with_error_handler(self) {
     match self.run() {
@@ -56,130 +129,112 @@ impl App {
 
   /// Start and dispatch the application by looking at the CLI, config, etc.
   fn run(self) -> Result<(), PutainDeMerdeError> {
-    let cli = CLI::parse();
-
-    // check if we are running on a specific path
-    if let Some(ref path) = cli.path {
-      self.run_specific_tree(cli.interactive, cli.cmd, path)?;
-      return Ok(());
-    }
-
-    // we are running config-based
-    self.run_config_based(cli.interactive, cli.cmd, cli.cwd)?;
-
-    Ok(())
-  }
-
-  fn run_specific_tree(
-    &self,
-    interactive: bool,
-    cmd: Command,
-    path: &Path,
-  ) -> Result<(), PutainDeMerdeError> {
-    let tree: encoding::Tree =
-      serde_json::from_str(&fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadTree)?)
-        .map_err(PutainDeMerdeError::CannotDeserializeTree)?;
-    let tree = Tree::from_encoding(tree);
-
-    match self.dispatch_cmd(interactive, cmd, &tree)? {
-      TreeFeedback::Persist => {
-        // TODO: persist specific tree to path
-      }
-
-      TreeFeedback::Exit => (),
-    }
-
-    Ok(())
-  }
-
-  fn run_config_based(
-    &self,
-    interactive: bool,
-    cmd: Command,
-    cwd: bool,
-  ) -> Result<(), PutainDeMerdeError> {
-    let forest_path = self
-      .config
-      .persistence
-      .forest_path()
-      .ok_or(PutainDeMerdeError::NoForestPath)?;
-
-    let forest = load_forest(&forest_path).or_else(|e| match e {
-      PutainDeMerdeError::NoForestPersisted => {
-        // no forest persisted yet, create a new one…
-        let forest = Forest::new(Tree::new("Main", " "));
-
-        // … and persist it
-        persist_forest(&forest, &forest_path)?;
-
-        Ok(forest)
-      }
-
-      _ => Err(e),
-    })?;
-
-    let tree = if cwd {
-      // run by looking up the CWD
-      let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
-      forest
-        .cwd_tree(&cwd)
-        .ok_or_else(|| PutainDeMerdeError::NoCWDTree(cwd))?
-    } else {
-      forest.main_tree()
-    };
-
-    // TODO: check whether we want a local tree or a global one
-    let feedback = self.dispatch_cmd(interactive, cmd, tree)?;
-    match feedback {
-      TreeFeedback::Persist => persist_forest(&forest, forest_path)?,
-      TreeFeedback::Exit => (),
-    }
-
-    Ok(())
-  }
-
-  /// FOO
-  fn dispatch_cmd(
-    &self,
-    interactive: bool,
-    cmd: Command,
-    tree: &Tree,
-  ) -> Result<TreeFeedback, PutainDeMerdeError> {
-    match cmd {
+    match &self.cli.cmd {
+      Command::Init { name } => self.run_init_cmd(name),
       Command::Insert { mode, sel, name } => {
-        self.run_insert_cmd(interactive, tree, mode, sel, name)
+        self.run_insert_cmd(*mode, sel.as_deref(), name.as_deref())
+      }
+      Command::Remove { sel } => self.run_remove_cmd(sel.as_deref()),
+      Command::Rename { sel, name } => self.run_rename_cmd(sel.as_deref(), name.as_deref()),
+      Command::Icon { sel, icon } => self.run_icon_cmd(sel.as_deref(), icon.as_deref()),
+      Command::Move { mode, sel, dest } => {
+        self.run_move_cmd(*mode, sel.as_deref(), dest.as_deref())
+      }
+      // TODO: add filtering
+      Command::Paths { sel, ty } => self.run_paths_cmd(sel.as_deref(), *ty),
+      Command::Data { sel, ty, cmd } => self.run_data_cmd(sel.as_deref(), *ty, cmd),
+    }
+  }
+
+  fn get_tree(&self) -> Result<AppTree, PutainDeMerdeError> {
+    match self.cli.path {
+      Some(ref tree_path) => Self::load_tree(tree_path).map(|tree| AppTree::Specific {
+        path: tree_path.to_owned(),
+        tree,
+      }),
+
+      None => {
+        if self.cli.cwd {
+          let forest = self.load_forest()?;
+          let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
+          forest
+            .cwd_tree(cwd.clone())
+            .cloned()
+            .map(|tree| AppTree::Forest {
+              forest,
+              tree: tree.clone(),
+            })
+            .ok_or_else(|| PutainDeMerdeError::NoCWDTree(cwd))
+        } else {
+          self.load_forest().map(|forest| AppTree::Forest {
+            tree: forest.main_tree().clone(),
+            forest,
+          })
+        }
+      }
+    }
+  }
+
+  /// Persist the application tree.
+  fn persist(&self, tree: AppTree) -> Result<(), PutainDeMerdeError> {
+    match tree {
+      AppTree::Specific { path, tree } => Self::persist_tree_to_path(&tree, path),
+      AppTree::Forest { forest, .. } => self.persist_forest(&forest),
+    }
+  }
+
+  fn run_init_cmd(&self, name: &str) -> Result<(), PutainDeMerdeError> {
+    // if we have passed a specific tree path, create it at the given path and return
+    match self.cli.path {
+      Some(ref tree_path) => {
+        let tree = Tree::new(name, PROJECT_ICON);
+        return Self::persist_tree_to_path(&tree, tree_path);
       }
 
-      Command::Remove { sel } => self.run_remove_cmd(interactive, tree, sel),
+      _ => (),
+    }
 
-      Command::Rename { sel, name } => self.run_rename_cmd(interactive, tree, sel, name),
+    // TODO: support local mode
+    // check if we are in CWD
+    if self.cli.cwd {
+      // we need the forest first
+      let mut forest = self.load_forest()?;
+      let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
+      let tree = Tree::new(name, PROJECT_ICON);
+      forest.add_cwd_tree(cwd, tree);
+      return self.persist_forest(&forest);
+    }
 
-      Command::Icon { sel, icon } => self.run_icon_cmd(interactive, tree, sel, icon),
+    // create the main tree / forest
+    match self.load_forest() {
+      Ok(_) => Err(PutainDeMerdeError::AlreadyExists),
 
-      Command::Move { mode, sel, dest } => self.run_move_cmd(interactive, tree, mode, sel, dest),
+      // if this is the first time we create any tree, it’s logical we don’t have anything persisted yet; use
+      // a default one
+      Err(PutainDeMerdeError::NoForestPersisted) => {
+        let forest = Forest::new(Tree::new(name, PROJECT_ICON));
+        self.persist_forest(&forest)
+      }
 
-      // TODO: add filtering
-      Command::Paths { sel, ty } => self.run_paths_cmd(interactive, tree, sel, ty),
-
-      Command::Data { sel, ty, cmd } => self.run_data_cmd(interactive, tree, sel, ty, cmd),
+      // any other error surfaces as error
+      Err(e) => Err(e),
     }
   }
 
   fn run_insert_cmd(
     &self,
-    interactive: bool,
-    tree: &Tree,
     mode: InsertMode,
-    sel: Option<String>,
-    name: Option<String>,
-  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    sel: Option<&str>,
+    name: Option<&str>,
+  ) -> Result<(), PutainDeMerdeError> {
+    let tree = self.get_tree()?;
     let sel = self
       .ui
       .get_base_sel(
-        ui::PickerOptions::either(interactive, "Insert in: "),
-        &sel,
+        ui::PickerOptions::either(self.cli.interactive, "Insert in: "),
+        sel,
         NodeFilter::default(),
-        tree,
+        &tree,
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
@@ -188,43 +243,52 @@ impl App {
       None => Cow::from(self.ui.get_input_string("New name: ")?),
     };
 
-    insert(&sel, Node::new(name.trim(), ""), mode)?;
-    Ok(TreeFeedback::Persist)
+    let node = Node::new(name.trim(), "");
+    if node.name().is_empty() {
+      return Err(PutainDeMerdeError::EmptyName);
+    }
+
+    match mode {
+      InsertMode::InsideTop => sel.insert_top(node),
+      InsertMode::InsideBottom => sel.insert_bottom(node),
+      InsertMode::Before => sel.insert_before(node)?,
+      InsertMode::After => sel.insert_after(node)?,
+    }
+
+    self.persist(tree)
   }
 
-  fn run_remove_cmd(
-    &self,
-    interactive: bool,
-    tree: &Tree,
-    sel: Option<String>,
-  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+  fn run_remove_cmd(&self, sel: Option<&str>) -> Result<(), PutainDeMerdeError> {
+    let tree = self.get_tree()?;
     let sel = self
       .ui
       .get_base_sel(
-        ui::PickerOptions::either(interactive, "Remove: "),
-        &sel,
+        ui::PickerOptions::either(self.cli.interactive, "Remove: "),
+        sel,
         NodeFilter::default(),
-        tree,
+        &tree,
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-    remove(sel)?;
-    Ok(TreeFeedback::Persist)
+
+    let parent = sel.parent()?;
+    parent.delete(sel)?;
+
+    self.persist(tree)
   }
 
   fn run_rename_cmd(
     &self,
-    interactive: bool,
-    tree: &Tree,
-    sel: Option<String>,
-    name: Option<String>,
-  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    sel: Option<&str>,
+    name: Option<&str>,
+  ) -> Result<(), PutainDeMerdeError> {
+    let tree = self.get_tree()?;
     let sel = self
       .ui
       .get_base_sel(
-        ui::PickerOptions::either(interactive, "Rename: "),
-        &sel,
+        ui::PickerOptions::either(self.cli.interactive, "Rename: "),
+        sel,
         NodeFilter::default(),
-        tree,
+        &tree,
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
@@ -233,24 +297,25 @@ impl App {
       None => Cow::from(self.ui.get_input_string("New node name: ")?),
     };
 
-    rename(sel, name.trim())?;
-    Ok(TreeFeedback::Persist)
+    let name = name.trim();
+    if name.is_empty() {
+      return Err(PutainDeMerdeError::EmptyName);
+    }
+
+    sel.set_name(name)?;
+
+    self.persist(tree)
   }
 
-  fn run_icon_cmd(
-    &self,
-    interactive: bool,
-    tree: &Tree,
-    sel: Option<String>,
-    icon: Option<String>,
-  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+  fn run_icon_cmd(&self, sel: Option<&str>, icon: Option<&str>) -> Result<(), PutainDeMerdeError> {
+    let tree = self.get_tree()?;
     let sel = self
       .ui
       .get_base_sel(
-        ui::PickerOptions::either(interactive, "Change icon: "),
-        &sel,
+        ui::PickerOptions::either(self.cli.interactive, "Change icon: "),
+        sel,
         NodeFilter::default(),
-        tree,
+        &tree,
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
@@ -259,84 +324,85 @@ impl App {
       None => Cow::from(self.ui.get_input_string("Change node icon > ")?),
     };
 
-    change_icon(sel, icon.trim());
-    Ok(TreeFeedback::Persist)
+    sel.set_icon(icon.trim());
+    self.persist(tree)
   }
 
   fn run_move_cmd(
     &self,
-    interactive: bool,
-    tree: &Tree,
     mode: InsertMode,
-    sel: Option<String>,
-    dest: Option<String>,
-  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    sel: Option<&str>,
+    dest: Option<&str>,
+  ) -> Result<(), PutainDeMerdeError> {
+    let tree = self.get_tree()?;
     let sel = self
       .ui
       .get_base_sel(
-        ui::PickerOptions::either(interactive, "Source node: "),
-        &sel,
+        ui::PickerOptions::either(self.cli.interactive, "Source node: "),
+        sel,
         NodeFilter::default(),
-        tree,
+        &tree,
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     let dest = self
       .ui
       .get_base_sel(
-        ui::PickerOptions::either(interactive, "Destination node: "),
-        &dest,
+        ui::PickerOptions::either(self.cli.interactive, "Destination node: "),
+        dest,
         NodeFilter::default(),
-        tree,
+        &tree,
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    move_from_to(sel, dest, mode)?;
-    Ok(TreeFeedback::Persist)
+    match mode {
+      InsertMode::InsideTop => dest.move_top(sel)?,
+      InsertMode::InsideBottom => dest.move_bottom(sel)?,
+      InsertMode::Before => dest.move_before(sel)?,
+      InsertMode::After => dest.move_after(sel)?,
+    }
+
+    self.persist(tree)
   }
 
   fn run_paths_cmd(
     &self,
-    interactive: bool,
-    tree: &Tree,
-    sel: Option<String>,
+    sel: Option<&str>,
     ty: Option<DataType>,
-  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+  ) -> Result<(), PutainDeMerdeError> {
+    let tree = self.get_tree()?;
     let prefix = sel.as_deref().unwrap_or("/");
-
     let filter = ty.map(DataType::to_filter).unwrap_or_default();
 
     let sel = self
       .ui
       .get_base_sel(
-        ui::PickerOptions::either(interactive, "Get paths: "),
-        &sel,
+        ui::PickerOptions::either(self.cli.interactive, "Get paths: "),
+        sel,
         NodeFilter::default(),
-        tree,
+        &tree,
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     sel.write_paths(prefix, filter, &mut io::stdout())?;
-
-    Ok(TreeFeedback::Exit)
+    self.persist(tree)
   }
 
   fn run_data_cmd(
     &self,
-    interactive: bool,
-    tree: &Tree,
-    sel: Option<String>,
+    sel: Option<&str>,
     ty: Option<DataType>,
-    cmd: DataCommand,
-  ) -> Result<TreeFeedback, PutainDeMerdeError> {
+    cmd: &DataCommand,
+  ) -> Result<(), PutainDeMerdeError> {
+    let tree = self.get_tree()?;
     let filter = ty.map(DataType::to_filter).unwrap_or_default();
     let sel = self
       .ui
       .get_base_sel(
-        ui::PickerOptions::either(interactive, "Get data: "),
-        &sel,
+        ui::PickerOptions::either(self.cli.interactive, "Get data: "),
+        sel,
         filter,
-        tree,
+        &tree,
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
@@ -352,14 +418,14 @@ impl App {
           }
         }
 
-        Ok(TreeFeedback::Exit)
+        Ok(())
       }
 
       DataCommand::Set { content } => {
         let data = ty
           .map(|ty| match ty {
-            DataType::File => NodeData::file(&content),
-            DataType::Link => NodeData::link(&content),
+            DataType::File => NodeData::file(content),
+            DataType::Link => NodeData::link(content),
           })
           .unwrap_or_else(|| {
             if content.is_empty() {
@@ -369,9 +435,9 @@ impl App {
               NodeData::link(content)
             }
           });
-        sel.set_data(data)?;
 
-        Ok(TreeFeedback::Persist)
+        sel.set_data(data)?;
+        self.persist(tree)
       }
     }
   }
@@ -387,6 +453,9 @@ pub enum PutainDeMerdeError {
   #[error("missing a base node selection")]
   MissingBaseSelection,
 
+  #[error("the tree or forest already exists")]
+  AlreadyExists,
+
   #[error("forbidden node operation")]
   NodeOperation(#[from] NodeError),
 
@@ -396,14 +465,17 @@ pub enum PutainDeMerdeError {
   #[error("no forest persisted yet")]
   NoForestPersisted,
 
+  #[error("no tree persisted yet")]
+  NoTreePersisted,
+
   #[error("error while serializing forest")]
   CannotSerializeForest(serde_json::Error),
 
   #[error("error while deserializing forest")]
   CannotDeserializeForest(serde_json::Error),
 
-  #[error("error while creating directories to hold the forest on the filesystem")]
-  CannotCreateForestDirectories(std::io::Error),
+  #[error("error while creating directories on the filesystem")]
+  CannotCreateDirectories(std::io::Error),
 
   #[error("error while writing forest to the filesystem")]
   CannotWriteForest(std::io::Error),
@@ -439,88 +511,22 @@ pub enum PutainDeMerdeError {
   UIError(#[from] UIError),
 }
 
-/// Feedback returned by operations dealing with trees.
-///
-/// The purpose of this type is to provide information to the caller about what to do next, mainly.
+/// Application tree.
 #[derive(Debug)]
-enum TreeFeedback {
-  Exit,
-  Persist,
+enum AppTree {
+  /// The tree lives on its own.
+  Specific { path: PathBuf, tree: Tree },
+
+  /// The tree lives in the forest.
+  Forest { forest: Forest, tree: Tree },
 }
 
-/// Insert a node into a selected one.
-fn insert(base_sel: &Node, node: Node, mode: InsertMode) -> Result<(), PutainDeMerdeError> {
-  if node.name().is_empty() {
-    return Err(PutainDeMerdeError::EmptyName);
-  }
+impl Deref for AppTree {
+  type Target = Tree;
 
-  match mode {
-    InsertMode::InsideTop => base_sel.insert_top(node),
-    InsertMode::InsideBottom => base_sel.insert_bottom(node),
-    InsertMode::Before => base_sel.insert_before(node)?,
-    InsertMode::After => base_sel.insert_after(node)?,
-  }
-
-  Ok(())
-}
-
-/// Delete a node.
-fn remove(base_sel: Node) -> Result<(), PutainDeMerdeError> {
-  let parent = base_sel.parent()?;
-  Ok(parent.delete(base_sel)?)
-}
-
-/// Rename a node.
-fn rename(base_sel: Node, name: impl AsRef<str>) -> Result<(), PutainDeMerdeError> {
-  let name = name.as_ref();
-
-  if name.is_empty() {
-    return Err(PutainDeMerdeError::EmptyName);
-  }
-
-  Ok(base_sel.set_name(name)?)
-}
-
-/// Change the icon of a node
-fn change_icon(base_sel: Node, icon: impl AsRef<str>) {
-  base_sel.set_icon(icon);
-}
-
-/// Move a node from a source to a destination.
-fn move_from_to(src: Node, dest: Node, mode: InsertMode) -> Result<(), PutainDeMerdeError> {
-  match mode {
-    InsertMode::InsideTop => Ok(dest.move_top(src)?),
-    InsertMode::InsideBottom => Ok(dest.move_bottom(src)?),
-    InsertMode::Before => Ok(dest.move_before(src)?),
-    InsertMode::After => Ok(dest.move_after(src)?),
-  }
-}
-
-fn load_forest(path: impl AsRef<Path>) -> Result<Forest, PutainDeMerdeError> {
-  let path = path.as_ref();
-
-  if path.exists() {
-    let contents = std::fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadForest)?;
-    serde_json::from_str(&contents).map_err(PutainDeMerdeError::CannotDeserializeForest)
-  } else {
-    // nothing to load
-    Err(PutainDeMerdeError::NoForestPersisted)
-  }
-}
-
-fn persist_forest(forest: &Forest, path: impl AsRef<Path>) -> Result<(), PutainDeMerdeError> {
-  let path = path.as_ref();
-
-  // ensure all parent directories are created
-  match path.parent() {
-    Some(parent) => {
-      std::fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateForestDirectories)?;
+  fn deref(&self) -> &Self::Target {
+    match self {
+      AppTree::Specific { tree, .. } | AppTree::Forest { tree, .. } => tree,
     }
-    _ => (),
   }
-
-  let serialized =
-    serde_json::to_string(forest).map_err(PutainDeMerdeError::CannotSerializeForest)?;
-  std::fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteForest)?;
-  Ok(())
 }

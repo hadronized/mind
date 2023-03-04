@@ -25,13 +25,12 @@ impl UI {
   pub fn get_base_sel(
     &self,
     picker_opts: PickerOptions,
-    sel: &Option<String>,
+    sel: Option<&str>,
     filter: NodeFilter,
     tree: &Tree,
   ) -> Option<Node> {
     {
       sel
-        .as_ref()
         .and_then(|path| tree.get_node_by_path(path_iter(&path)))
         .or_else(|| {
           let prompt = match picker_opts {
