@@ -24,6 +24,9 @@ pub struct CLI {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+  /// Initialize a new Mind tree.
+  Init { name: String },
+
   /// Insert a new node.
   ///
   /// This command requires a base selection.
