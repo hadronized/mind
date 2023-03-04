@@ -43,6 +43,36 @@ impl App {
     config
   }
 
+  fn load_forest(path: impl AsRef<Path>) -> Result<Forest, PutainDeMerdeError> {
+    let path = path.as_ref();
+
+    if path.exists() {
+      let contents = std::fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadForest)?;
+      serde_json::from_str(&contents).map_err(PutainDeMerdeError::CannotDeserializeForest)
+    } else {
+      // nothing to load
+      Err(PutainDeMerdeError::NoForestPersisted)
+    }
+  }
+
+  fn persist_forest(forest: &Forest, path: impl AsRef<Path>) -> Result<(), PutainDeMerdeError> {
+    let path = path.as_ref();
+
+    // ensure all parent directories are created
+    match path.parent() {
+      Some(parent) => {
+        std::fs::create_dir_all(parent)
+          .map_err(PutainDeMerdeError::CannotCreateForestDirectories)?;
+      }
+      _ => (),
+    }
+
+    let serialized =
+      serde_json::to_string(forest).map_err(PutainDeMerdeError::CannotSerializeForest)?;
+    std::fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteForest)?;
+    Ok(())
+  }
+
   /// Start the application by adding an error handler layer.
   fn with_error_handler(self) {
     match self.run() {
@@ -104,13 +134,13 @@ impl App {
       .forest_path()
       .ok_or(PutainDeMerdeError::NoForestPath)?;
 
-    let forest = load_forest(&forest_path).or_else(|e| match e {
+    let forest = Self::load_forest(&forest_path).or_else(|e| match e {
       PutainDeMerdeError::NoForestPersisted => {
         // no forest persisted yet, create a new one…
         let forest = Forest::new(Tree::new("Main", " "));
 
         // … and persist it
-        persist_forest(&forest, &forest_path)?;
+        Self::persist_forest(&forest, &forest_path)?;
 
         Ok(forest)
       }
@@ -131,7 +161,7 @@ impl App {
     // TODO: check whether we want a local tree or a global one
     let feedback = self.dispatch_cmd(interactive, cmd, tree)?;
     match feedback {
-      TreeFeedback::Persist => persist_forest(&forest, forest_path)?,
+      TreeFeedback::Persist => Self::persist_forest(&forest, forest_path)?,
       TreeFeedback::Exit => (),
     }
 
@@ -472,33 +502,4 @@ pub enum PutainDeMerdeError {
 enum TreeFeedback {
   Exit,
   Persist,
-}
-
-fn load_forest(path: impl AsRef<Path>) -> Result<Forest, PutainDeMerdeError> {
-  let path = path.as_ref();
-
-  if path.exists() {
-    let contents = std::fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadForest)?;
-    serde_json::from_str(&contents).map_err(PutainDeMerdeError::CannotDeserializeForest)
-  } else {
-    // nothing to load
-    Err(PutainDeMerdeError::NoForestPersisted)
-  }
-}
-
-fn persist_forest(forest: &Forest, path: impl AsRef<Path>) -> Result<(), PutainDeMerdeError> {
-  let path = path.as_ref();
-
-  // ensure all parent directories are created
-  match path.parent() {
-    Some(parent) => {
-      std::fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateForestDirectories)?;
-    }
-    _ => (),
-  }
-
-  let serialized =
-    serde_json::to_string(forest).map_err(PutainDeMerdeError::CannotSerializeForest)?;
-  std::fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteForest)?;
-  Ok(())
 }
