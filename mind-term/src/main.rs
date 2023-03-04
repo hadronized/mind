@@ -188,7 +188,18 @@ impl App {
       None => Cow::from(self.ui.get_input_string("New name: ")?),
     };
 
-    insert(&sel, Node::new(name.trim(), ""), mode)?;
+    let node = Node::new(name.trim(), "");
+    if node.name().is_empty() {
+      return Err(PutainDeMerdeError::EmptyName);
+    }
+
+    match mode {
+      InsertMode::InsideTop => sel.insert_top(node),
+      InsertMode::InsideBottom => sel.insert_bottom(node),
+      InsertMode::Before => sel.insert_before(node)?,
+      InsertMode::After => sel.insert_after(node)?,
+    }
+
     Ok(TreeFeedback::Persist)
   }
 
@@ -207,7 +218,10 @@ impl App {
         tree,
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
-    remove(sel)?;
+
+    let parent = sel.parent()?;
+    parent.delete(sel)?;
+
     Ok(TreeFeedback::Persist)
   }
 
@@ -233,7 +247,13 @@ impl App {
       None => Cow::from(self.ui.get_input_string("New node name: ")?),
     };
 
-    rename(sel, name.trim())?;
+    let name = name.trim();
+    if name.is_empty() {
+      return Err(PutainDeMerdeError::EmptyName);
+    }
+
+    sel.set_name(name)?;
+
     Ok(TreeFeedback::Persist)
   }
 
@@ -259,7 +279,7 @@ impl App {
       None => Cow::from(self.ui.get_input_string("Change node icon > ")?),
     };
 
-    change_icon(sel, icon.trim());
+    sel.set_icon(icon.trim());
     Ok(TreeFeedback::Persist)
   }
 
@@ -291,7 +311,13 @@ impl App {
       )
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    move_from_to(sel, dest, mode)?;
+    match mode {
+      InsertMode::InsideTop => dest.move_top(sel)?,
+      InsertMode::InsideBottom => dest.move_bottom(sel)?,
+      InsertMode::Before => dest.move_before(sel)?,
+      InsertMode::After => dest.move_after(sel)?,
+    }
+
     Ok(TreeFeedback::Persist)
   }
 
@@ -446,54 +472,6 @@ pub enum PutainDeMerdeError {
 enum TreeFeedback {
   Exit,
   Persist,
-}
-
-/// Insert a node into a selected one.
-fn insert(base_sel: &Node, node: Node, mode: InsertMode) -> Result<(), PutainDeMerdeError> {
-  if node.name().is_empty() {
-    return Err(PutainDeMerdeError::EmptyName);
-  }
-
-  match mode {
-    InsertMode::InsideTop => base_sel.insert_top(node),
-    InsertMode::InsideBottom => base_sel.insert_bottom(node),
-    InsertMode::Before => base_sel.insert_before(node)?,
-    InsertMode::After => base_sel.insert_after(node)?,
-  }
-
-  Ok(())
-}
-
-/// Delete a node.
-fn remove(base_sel: Node) -> Result<(), PutainDeMerdeError> {
-  let parent = base_sel.parent()?;
-  Ok(parent.delete(base_sel)?)
-}
-
-/// Rename a node.
-fn rename(base_sel: Node, name: impl AsRef<str>) -> Result<(), PutainDeMerdeError> {
-  let name = name.as_ref();
-
-  if name.is_empty() {
-    return Err(PutainDeMerdeError::EmptyName);
-  }
-
-  Ok(base_sel.set_name(name)?)
-}
-
-/// Change the icon of a node
-fn change_icon(base_sel: Node, icon: impl AsRef<str>) {
-  base_sel.set_icon(icon);
-}
-
-/// Move a node from a source to a destination.
-fn move_from_to(src: Node, dest: Node, mode: InsertMode) -> Result<(), PutainDeMerdeError> {
-  match mode {
-    InsertMode::InsideTop => Ok(dest.move_top(src)?),
-    InsertMode::InsideBottom => Ok(dest.move_bottom(src)?),
-    InsertMode::Before => Ok(dest.move_before(src)?),
-    InsertMode::After => Ok(dest.move_after(src)?),
-  }
 }
 
 fn load_forest(path: impl AsRef<Path>) -> Result<Forest, PutainDeMerdeError> {
