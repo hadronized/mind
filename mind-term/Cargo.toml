@@ -15,6 +15,7 @@ name = "mind"
 path = "src/main.rs"
 
 [dependencies]
+chrono = "0.4.23"
 clap = { version = "4.1.4", features = ["derive"] }
 colored = "2.0.0"
 dirs = "4.0.0"
