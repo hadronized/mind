@@ -31,6 +31,9 @@ pub struct Config {
 
   #[serde(default)]
   pub interactive: InteractiveConfig,
+
+  #[serde(default)]
+  pub edit: EditConfig,
 }
 
 impl Config {
@@ -102,4 +105,9 @@ impl InteractiveConfig {
   pub fn fuzzy_term_prompt_opt(&self) -> Option<&str> {
     self.fuzzy_term_prompt_opt.as_deref()
   }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EditConfig {
+  pub extension: Option<String>,
 }

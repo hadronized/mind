@@ -1,11 +1,13 @@
 mod cli;
 mod config;
+mod data_file;
 mod ui;
 
 use clap::Parser;
 use cli::{Command, DataCommand, DataType, InsertMode, CLI};
 use colored::Colorize;
 use config::Config;
+use data_file::{DataFileStore, DataFileStoreError};
 use mind::forest::Forest;
 use mind::node::{Node, NodeData, NodeError, NodeFilter};
 use mind::{encoding, node::Tree};
@@ -24,15 +26,26 @@ struct App {
   config: Config,
   cli: CLI,
   ui: UI,
+  data_file_store: DataFileStore,
 }
 
 impl App {
-  fn new() -> Self {
+  fn new() -> Result<Self, PutainDeMerdeError> {
     let config = Self::load_config();
     let cli = CLI::parse();
     let ui = UI::new(&config);
+    let data_dir = config
+      .persistence
+      .data_dir()
+      .ok_or(PutainDeMerdeError::NoDataDir)?;
+    let data_file_store = DataFileStore::new(data_dir);
 
-    Self { config, cli, ui }
+    Ok(Self {
+      config,
+      cli,
+      ui,
+      data_file_store,
+    })
   }
 
   fn load_config() -> Config {
@@ -72,7 +85,7 @@ impl App {
       return Err(PutainDeMerdeError::NoForestPersisted);
     }
 
-    let contents = std::fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadForest)?;
+    let contents = fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadForest)?;
     serde_json::from_str(&contents).map_err(PutainDeMerdeError::CannotDeserializeForest)
   }
 
@@ -82,7 +95,7 @@ impl App {
     // ensure all parent directories are created
     match path.parent() {
       Some(parent) => {
-        std::fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
+        fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
       }
 
       _ => (),
@@ -90,7 +103,7 @@ impl App {
 
     let serialized =
       serde_json::to_string(tree).map_err(PutainDeMerdeError::CannotSerializeTree)?;
-    std::fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteTree)?;
+    fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteTree)?;
     Ok(())
   }
 
@@ -104,7 +117,7 @@ impl App {
     // ensure all parent directories are created
     match path.parent() {
       Some(parent) => {
-        std::fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
+        fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
       }
 
       _ => (),
@@ -112,7 +125,7 @@ impl App {
 
     let serialized =
       serde_json::to_string(forest).map_err(PutainDeMerdeError::CannotSerializeForest)?;
-    std::fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteForest)?;
+    fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteForest)?;
     Ok(())
   }
 
@@ -122,8 +135,8 @@ impl App {
   }
 
   /// Start the application by adding an error handler layer.
-  fn with_error_handler(self) {
-    match self.run() {
+  fn bootstrap() {
+    match Self::new().and_then(Self::run) {
       Err(err) => {
         eprintln!("{}", err.to_string().red());
       }
@@ -413,7 +426,7 @@ impl App {
     let sel = self
       .ui
       .get_base_sel(
-        ui::PickerOptions::either(self.cli.interactive, "Get data: "),
+        ui::PickerOptions::either(self.cli.interactive, "Data node: "),
         sel,
         filter,
         &tree,
@@ -436,19 +449,23 @@ impl App {
       }
 
       DataCommand::Set { content } => {
-        let data = ty
-          .map(|ty| match ty {
-            DataType::File => NodeData::file(content),
-            DataType::Link => NodeData::link(content),
-          })
-          .unwrap_or_else(|| {
+        let data = match ty {
+          Some(DataType::File) => NodeData::file(content),
+          Some(DataType::Link) => NodeData::link(content),
+          None => {
             if content.is_empty() {
-              // TODO: we need to create a file / something here
-              NodeData::file(content)
+              // TODO: support automatically setting the content based on the name and a template thing
+              let path = self.data_file_store.create_data_file(
+                sel.name(),
+                self.config.edit.extension.as_deref().unwrap_or(".md"),
+                "",
+              )?;
+              NodeData::file(path)
             } else {
               NodeData::link(content)
             }
-          });
+          }
+        };
 
         sel.set_data(data)?;
         self.persist(tree)
@@ -458,14 +475,16 @@ impl App {
 }
 
 fn main() {
-  let app = App::new();
-  app.with_error_handler();
+  App::bootstrap();
 }
 
 #[derive(Debug, Error)]
 pub enum PutainDeMerdeError {
   #[error("missing a base node selection")]
   MissingBaseSelection,
+
+  #[error("no data directory available")]
+  NoDataDir,
 
   #[error("the tree or forest already exists")]
   AlreadyExists,
@@ -523,6 +542,9 @@ pub enum PutainDeMerdeError {
 
   #[error("UI error: {0}")]
   UIError(#[from] UIError),
+
+  #[error("data file store error: {0}")]
+  DataFileStoreError(#[from] DataFileStoreError),
 }
 
 /// Application tree.
