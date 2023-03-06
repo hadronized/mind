@@ -116,6 +116,11 @@ impl App {
     Ok(())
   }
 
+  /// Get the path to a local mind in the cwd argument.
+  fn local_mind_path(cwd: impl AsRef<Path>) -> PathBuf {
+    cwd.as_ref().join(".mind/state.json")
+  }
+
   /// Start the application by adding an error handler layer.
   fn with_error_handler(self) {
     match self.run() {
@@ -154,9 +159,13 @@ impl App {
       }),
 
       None => {
-        if self.cli.cwd {
+        let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
+
+        if self.cli.local {
+          let path = Self::local_mind_path(&cwd);
+          Self::load_tree(&path).map(|tree| AppTree::Specific { path, tree })
+        } else if self.cli.cwd {
           let forest = self.load_forest()?;
-          let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
           forest
             .cwd_tree(cwd.clone())
             .cloned()
@@ -184,23 +193,28 @@ impl App {
   }
 
   fn run_init_cmd(&self, name: &str) -> Result<(), PutainDeMerdeError> {
+    let tree = Tree::new(name, PROJECT_ICON);
+
     // if we have passed a specific tree path, create it at the given path and return
     match self.cli.path {
       Some(ref tree_path) => {
-        let tree = Tree::new(name, PROJECT_ICON);
         return Self::persist_tree_to_path(&tree, tree_path);
       }
 
       _ => (),
     }
 
-    // TODO: support local mode
+    let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
+
+    if self.cli.local {
+      let path = Self::local_mind_path(cwd);
+      return Self::persist_tree_to_path(&tree, path);
+    }
+
     // check if we are in CWD
     if self.cli.cwd {
       // we need the forest first
       let mut forest = self.load_forest()?;
-      let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
-      let tree = Tree::new(name, PROJECT_ICON);
       forest.add_cwd_tree(cwd, tree);
       return self.persist_forest(&forest);
     }
@@ -212,7 +226,7 @@ impl App {
       // if this is the first time we create any tree, it’s logical we don’t have anything persisted yet; use
       // a default one
       Err(PutainDeMerdeError::NoForestPersisted) => {
-        let forest = Forest::new(Tree::new(name, PROJECT_ICON));
+        let forest = Forest::new(tree);
         self.persist_forest(&forest)
       }
 

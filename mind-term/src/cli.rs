@@ -12,6 +12,12 @@ pub struct CLI {
   #[arg(short, long, default_value_t = false)]
   pub cwd: bool,
 
+  /// Use a local tree.
+  ///
+  /// This implies --path and --cwd, so you don’t have to set them.
+  #[arg(short, long)]
+  pub local: bool,
+
   /// Interactive mode.
   ///
   /// When run in interactive mode, base selections can be selected via a fuzzy program.
