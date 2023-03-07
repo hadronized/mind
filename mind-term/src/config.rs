@@ -76,14 +76,14 @@ impl PersistenceConfig {
     self
       .data_dir
       .clone()
-      .or(dirs::data_dir().map(|p| p.join("mind/data")))
+      .or_else(|| dirs::data_dir().map(|p| p.join("mind/data")))
   }
 
   pub fn forest_path(&self) -> Option<PathBuf> {
     self
       .state_path
       .clone()
-      .or(dirs::data_dir().map(|p| p.join("mind/mind.json")))
+      .or_else(|| dirs::data_dir().map(|p| p.join("mind/mind.json")))
   }
 }
 

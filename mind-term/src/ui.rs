@@ -34,7 +34,7 @@ impl UI {
   ) -> Option<Node> {
     {
       sel
-        .and_then(|path| tree.get_node_by_path(path_iter(&path)))
+        .and_then(|path| tree.get_node_by_path(path_iter(path)))
         .or_else(|| {
           let prompt = match picker_opts {
             // no explicit selection; try to use a fuzzy finder
@@ -46,12 +46,8 @@ impl UI {
           let mut child = std::process::Command::new(program);
           child.stdin(Stdio::piped()).stdout(Stdio::piped());
 
-          match self.fuzzy_term_prompt_opt {
-            Some(ref prompt_prefix) => {
-              child.arg(format!("{} {}", prompt_prefix, prompt));
-            }
-
-            _ => (),
+          if let Some(ref prompt_prefix) = self.fuzzy_term_prompt_opt {
+            child.arg(format!("{} {}", prompt_prefix, prompt));
           }
 
           let child = child.spawn().ok()?;
@@ -102,7 +98,7 @@ impl UI {
 
   pub fn open_uri(&self, uri: impl AsRef<str>) -> Result<(), UIError> {
     let uri = uri.as_ref();
-    open::that(&uri).map_err(|err| UIError::URIError {
+    open::that(uri).map_err(|err| UIError::URIError {
       uri: uri.to_owned(),
       err,
     })

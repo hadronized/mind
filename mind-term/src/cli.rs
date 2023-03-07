@@ -3,7 +3,7 @@ use mind::node::NodeFilter;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-pub struct CLI {
+pub struct Cli {
   /// Open a specific Mind tree at a given path.
   #[arg(short, long)]
   pub path: Option<PathBuf>,
