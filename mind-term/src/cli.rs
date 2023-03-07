@@ -45,6 +45,18 @@ pub enum Command {
     #[arg(short, long)]
     sel: Option<String>,
 
+    /// Associate a file upon creation.
+    #[arg(short, long)]
+    file: bool,
+
+    /// Associate a link upon creation.
+    #[arg(short, long)]
+    link: Option<String>,
+
+    /// Open associated data, if any, after insertion.
+    #[arg(short, long)]
+    open: bool,
+
     /// Name of the node to create.
     #[arg(short, long)]
     name: Option<String>,

@@ -149,9 +149,21 @@ impl App {
   fn run(self) -> Result<(), PutainDeMerdeError> {
     match &self.cli.cmd {
       Command::Init { name } => self.run_init_cmd(name),
-      Command::Insert { mode, sel, name } => {
-        self.run_insert_cmd(*mode, sel.as_deref(), name.as_deref())
-      }
+      Command::Insert {
+        mode,
+        sel,
+        file,
+        link,
+        open,
+        name,
+      } => self.run_insert_cmd(
+        *mode,
+        sel.as_deref(),
+        *file,
+        link.as_deref(),
+        *open,
+        name.as_deref(),
+      ),
       Command::Remove { sel } => self.run_remove_cmd(sel.as_deref()),
       Command::Rename { sel, name } => self.run_rename_cmd(sel.as_deref(), name.as_deref()),
       Command::Icon { sel, icon } => self.run_icon_cmd(sel.as_deref(), icon.as_deref()),
@@ -198,10 +210,10 @@ impl App {
   }
 
   /// Persist the application tree.
-  fn persist(&self, tree: AppTree) -> Result<(), PutainDeMerdeError> {
+  fn persist(&self, tree: &AppTree) -> Result<(), PutainDeMerdeError> {
     match tree {
-      AppTree::Specific { path, tree } => Self::persist_tree_to_path(&tree, path),
-      AppTree::Forest { forest, .. } => self.persist_forest(&forest),
+      AppTree::Specific { path, tree } => Self::persist_tree_to_path(tree, path),
+      AppTree::Forest { forest, .. } => self.persist_forest(forest),
     }
   }
 
@@ -252,6 +264,9 @@ impl App {
     &self,
     mode: InsertMode,
     sel: Option<&str>,
+    file: bool,
+    link: Option<&str>,
+    open: bool,
     name: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
     let tree = self.get_tree()?;
@@ -276,13 +291,92 @@ impl App {
     }
 
     match mode {
-      InsertMode::InsideTop => sel.insert_top(node),
-      InsertMode::InsideBottom => sel.insert_bottom(node),
-      InsertMode::Before => sel.insert_before(node)?,
-      InsertMode::After => sel.insert_after(node)?,
+      InsertMode::InsideTop => sel.insert_top(node.clone()),
+      InsertMode::InsideBottom => sel.insert_bottom(node.clone()),
+      InsertMode::Before => sel.insert_before(node.clone())?,
+      InsertMode::After => sel.insert_after(node.clone())?,
     }
 
-    self.persist(tree)
+    self.persist(&tree)?;
+
+    if file {
+      self.check_create_open_data(None, open, &node, "")?;
+      self.persist(&tree)?;
+    } else if let Some(content) = link {
+      self.check_create_open_data(None, open, &node, content)?;
+      self.persist(&tree)?;
+    }
+
+    Ok(())
+  }
+
+  /// Check whether we need to create and associate data, and eventually open the associated data.
+  fn check_create_open_data(
+    &self,
+    ty: Option<DataType>,
+    open: bool,
+    node: &Node,
+    content: &str,
+  ) -> Result<(), PutainDeMerdeError> {
+    let data = match ty {
+      Some(DataType::File) => NodeData::file(content),
+      Some(DataType::Link) => NodeData::link(content),
+      None => {
+        if content.is_empty() {
+          // TODO: support automatically setting the content based on the name and a template thing
+          let path = self.data_file_store.create_data_file(
+            node.name(),
+            self.config.ui.extension.as_deref().unwrap_or(".md"),
+            "",
+          )?;
+          NodeData::file(path)
+        } else {
+          NodeData::link(content)
+        }
+      }
+    };
+
+    node.set_data(data)?;
+
+    if open {
+      self.get_open_data(ty, open, node)?;
+    }
+
+    Ok(())
+  }
+
+  /// Get or open the data associated with a node.
+  fn get_open_data(
+    &self,
+    ty: Option<DataType>,
+    open: bool,
+    node: &Node,
+  ) -> Result<(), PutainDeMerdeError> {
+    match node.data() {
+      Some(content) => match (ty, content) {
+        (None | Some(DataType::File), NodeData::File(path)) => {
+          if open {
+            self.ui.open_with_editor(path)?;
+          } else {
+            println!("{}", path.display())
+          }
+        }
+
+        (None | Some(DataType::Link), NodeData::Link(link)) => {
+          if open {
+            self.ui.open_uri(link)?;
+          } else {
+            println!("{}", link);
+          }
+        }
+
+        _ => Err(NodeError::MismatchDataType)?,
+      },
+
+      None => (),
+    }
+
+    Ok(())
   }
 
   fn run_remove_cmd(&self, sel: Option<&str>) -> Result<(), PutainDeMerdeError> {
@@ -300,7 +394,7 @@ impl App {
     let parent = sel.parent()?;
     parent.delete(sel)?;
 
-    self.persist(tree)
+    self.persist(&tree)
   }
 
   fn run_rename_cmd(
@@ -331,7 +425,7 @@ impl App {
 
     sel.set_name(name)?;
 
-    self.persist(tree)
+    self.persist(&tree)
   }
 
   fn run_icon_cmd(&self, sel: Option<&str>, icon: Option<&str>) -> Result<(), PutainDeMerdeError> {
@@ -352,7 +446,7 @@ impl App {
     };
 
     sel.set_icon(icon.trim());
-    self.persist(tree)
+    self.persist(&tree)
   }
 
   fn run_move_cmd(
@@ -389,7 +483,7 @@ impl App {
       InsertMode::After => dest.move_after(sel)?,
     }
 
-    self.persist(tree)
+    self.persist(&tree)
   }
 
   fn run_paths_cmd(
@@ -412,7 +506,7 @@ impl App {
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     sel.write_paths(prefix, filter, &mut io::stdout())?;
-    self.persist(tree)
+    self.persist(&tree)
   }
 
   fn run_data_cmd(
@@ -435,53 +529,11 @@ impl App {
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     match cmd {
-      DataCommand::Get => {
-        if let Some(content) = sel.data() {
-          match (ty, content) {
-            (None | Some(DataType::File), NodeData::File(path)) => {
-              if open {
-                self.ui.open_with_editor(path)?;
-              } else {
-                println!("{}", path.display())
-              }
-            }
-
-            (None | Some(DataType::Link), NodeData::Link(link)) => {
-              if open {
-                self.ui.open_uri(link)?;
-              } else {
-                println!("{}", link);
-              }
-            }
-
-            _ => Err(NodeError::MismatchDataType)?,
-          }
-        }
-
-        Ok(())
-      }
+      DataCommand::Get => self.get_open_data(ty, open, &sel),
 
       DataCommand::Set { content } => {
-        let data = match ty {
-          Some(DataType::File) => NodeData::file(content),
-          Some(DataType::Link) => NodeData::link(content),
-          None => {
-            if content.is_empty() {
-              // TODO: support automatically setting the content based on the name and a template thing
-              let path = self.data_file_store.create_data_file(
-                sel.name(),
-                self.config.edit.extension.as_deref().unwrap_or(".md"),
-                "",
-              )?;
-              NodeData::file(path)
-            } else {
-              NodeData::link(content)
-            }
-          }
-        };
-
-        sel.set_data(data)?;
-        self.persist(tree)
+        self.check_create_open_data(ty, open, &sel, content)?;
+        self.persist(&tree)
       }
     }
   }
