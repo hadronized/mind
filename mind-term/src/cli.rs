@@ -9,7 +9,7 @@ pub struct CLI {
   pub path: Option<PathBuf>,
 
   /// Use a CWD-tree instead of the global tree.
-  #[arg(short, long, default_value_t = false)]
+  #[arg(short, long)]
   pub cwd: bool,
 
   /// Use a local tree.
@@ -21,7 +21,7 @@ pub struct CLI {
   /// Interactive mode.
   ///
   /// When run in interactive mode, base selections can be selected via a fuzzy program.
-  #[arg(short, long, default_value_t = false)]
+  #[arg(short, long)]
   pub interactive: bool,
 
   #[command(subcommand)]
