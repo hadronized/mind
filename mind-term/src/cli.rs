@@ -9,7 +9,7 @@ pub struct CLI {
   pub path: Option<PathBuf>,
 
   /// Use a CWD-tree instead of the global tree.
-  #[arg(short, long, default_value_t = false)]
+  #[arg(short, long)]
   pub cwd: bool,
 
   /// Use a local tree.
@@ -21,7 +21,7 @@ pub struct CLI {
   /// Interactive mode.
   ///
   /// When run in interactive mode, base selections can be selected via a fuzzy program.
-  #[arg(short, long, default_value_t = false)]
+  #[arg(short, long)]
   pub interactive: bool,
 
   #[command(subcommand)]
@@ -44,6 +44,18 @@ pub enum Command {
     /// Select a base node to operate on.
     #[arg(short, long)]
     sel: Option<String>,
+
+    /// Associate a file upon creation.
+    #[arg(short, long)]
+    file: bool,
+
+    /// Associate a link upon creation.
+    #[arg(short, long)]
+    link: Option<String>,
+
+    /// Open associated data, if any, after insertion.
+    #[arg(short, long)]
+    open: bool,
 
     /// Name of the node to create.
     #[arg(short, long)]
@@ -123,6 +135,14 @@ pub enum Command {
     /// Data type to use for the node.
     #[arg(name = "type", short, long, value_enum)]
     ty: Option<DataType>,
+
+    /// Open a node if it contains data.
+    ///
+    /// “Opening” is contextual: if the node is a file node, the file will be edited with your editor (either via the
+    /// $EDITOR environment variable, or via the edit.editor configuration path). If it’s a link node, a command used
+    /// to open URI will be used, depending on your operating system.
+    #[arg(short, long)]
+    open: bool,
 
     #[command(subcommand)]
     cmd: DataCommand,

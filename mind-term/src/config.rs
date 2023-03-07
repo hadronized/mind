@@ -33,7 +33,7 @@ pub struct Config {
   pub interactive: InteractiveConfig,
 
   #[serde(default)]
-  pub edit: EditConfig,
+  pub ui: UIConfig,
 }
 
 impl Config {
@@ -108,6 +108,7 @@ impl InteractiveConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct EditConfig {
+pub struct UIConfig {
+  pub editor: Option<String>,
   pub extension: Option<String>,
 }

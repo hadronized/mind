@@ -4,6 +4,7 @@ use crate::config::Config;
 use mind::node::{path_iter, Node, NodeFilter, Tree};
 use std::{
   io::{self, read_to_string, stdin, stdout, Write},
+  path::Path,
   process::Stdio,
 };
 use thiserror::Error;
@@ -12,6 +13,7 @@ use thiserror::Error;
 pub struct UI {
   fuzzy_term_program: Option<String>,
   fuzzy_term_prompt_opt: Option<String>,
+  editor: Option<String>,
 }
 
 impl UI {
@@ -19,6 +21,7 @@ impl UI {
     Self {
       fuzzy_term_program: config.interactive.fuzzy_term_program().map(Into::into),
       fuzzy_term_prompt_opt: config.interactive.fuzzy_term_prompt_opt().map(Into::into),
+      editor: config.ui.editor.clone(),
     }
   }
 
@@ -76,12 +79,49 @@ impl UI {
     let _ = stdin().read_line(&mut input).map_err(UIError::UserInput)?;
     Ok(input)
   }
+
+  /// Get the editor name.
+  fn get_editor(&self) -> Result<String, UIError> {
+    self
+      .editor
+      .as_ref()
+      .cloned()
+      .or_else(|| std::env::var("EDITOR").ok())
+      .ok_or(UIError::NoEditor)
+  }
+
+  /// Open the editor at the given path.
+  pub fn open_with_editor(&self, path: impl AsRef<Path>) -> Result<(), UIError> {
+    let editor = self.get_editor()?;
+    std::process::Command::new(editor)
+      .arg(path.as_ref())
+      .status()
+      .map(|_| ())
+      .map_err(UIError::EditorError)
+  }
+
+  pub fn open_uri(&self, uri: impl AsRef<str>) -> Result<(), UIError> {
+    let uri = uri.as_ref();
+    open::that(&uri).map_err(|err| UIError::URIError {
+      uri: uri.to_owned(),
+      err,
+    })
+  }
 }
 
 #[derive(Debug, Error)]
 pub enum UIError {
   #[error("cannot get user input: {0}")]
   UserInput(io::Error),
+
+  #[error("no editor configured; either set the $EDITOR environment variable or the edit.editor configuration path")]
+  NoEditor,
+
+  #[error("error while editing: process returned {0}")]
+  EditorError(io::Error),
+
+  #[error("error while opening URI {uri}: {err}")]
+  URIError { uri: String, err: io::Error },
 }
 
 #[derive(Debug)]
