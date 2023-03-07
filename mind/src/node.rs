@@ -294,7 +294,7 @@ impl Node {
 
   pub fn set_icon(&self, icon: impl AsRef<str>) {
     let icon = icon.as_ref().trim().to_owned();
-    self.inner.borrow_mut().icon = icon.into();
+    self.inner.borrow_mut().icon = icon;
   }
 
   pub fn data(&self) -> Option<NodeData> {
@@ -358,12 +358,12 @@ impl Node {
 
   pub fn insert_top(&self, node: Node) {
     node.inner.borrow_mut().parent = Some(self.downgrade());
-    let _ = self.inner.borrow_mut().children.insert(0, node);
+    self.inner.borrow_mut().children.insert(0, node);
   }
 
   pub fn insert_bottom(&self, node: Node) {
     node.inner.borrow_mut().parent = Some(self.downgrade());
-    let _ = self.inner.borrow_mut().children.push(node);
+    self.inner.borrow_mut().children.push(node);
   }
 
   pub fn insert_before(&self, node: Node) -> Result<(), NodeError> {
@@ -371,7 +371,7 @@ impl Node {
     let i = self.get_index(&parent)?;
 
     node.inner.borrow_mut().parent = Some(parent.downgrade());
-    let _ = parent.inner.borrow_mut().children.insert(i, node);
+    parent.inner.borrow_mut().children.insert(i, node);
     Ok(())
   }
 
@@ -380,7 +380,7 @@ impl Node {
     let i = self.get_index(&parent)? + 1;
 
     node.inner.borrow_mut().parent = Some(parent.downgrade());
-    let _ = parent.inner.borrow_mut().children.insert(i, node);
+    parent.inner.borrow_mut().children.insert(i, node);
     Ok(())
   }
 
@@ -550,7 +550,7 @@ pub enum NodeError {
 /// Split a string in the form of `/NodeA/NodeB/…` into an iterator of path segment.
 ///
 /// Use that function to pass to various tree and node API functions expecting a path.
-pub fn path_iter<'a>(path: &'a str) -> impl Iterator<Item = &'a str> {
+pub fn path_iter(path: &str) -> impl Iterator<Item = &str> {
   path.split('/').filter(|frag| !frag.trim().is_empty())
 }
 
