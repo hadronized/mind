@@ -21,7 +21,7 @@ impl UI {
     Self {
       fuzzy_term_program: config.interactive.fuzzy_term_program().map(Into::into),
       fuzzy_term_prompt_opt: config.interactive.fuzzy_term_prompt_opt().map(Into::into),
-      editor: config.edit.editor.clone(),
+      editor: config.ui.editor.clone(),
     }
   }
 
