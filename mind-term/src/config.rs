@@ -109,5 +109,6 @@ impl InteractiveConfig {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EditConfig {
+  pub editor: Option<String>,
   pub extension: Option<String>,
 }

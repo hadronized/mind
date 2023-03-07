@@ -160,7 +160,7 @@ impl App {
       }
       // TODO: add filtering
       Command::Paths { sel, ty } => self.run_paths_cmd(sel.as_deref(), *ty),
-      Command::Data { sel, ty, cmd } => self.run_data_cmd(sel.as_deref(), *ty, cmd),
+      Command::Data { sel, ty, open, cmd } => self.run_data_cmd(sel.as_deref(), *ty, *open, cmd),
     }
   }
 
@@ -419,6 +419,7 @@ impl App {
     &self,
     sel: Option<&str>,
     ty: Option<DataType>,
+    open: bool,
     cmd: &DataCommand,
   ) -> Result<(), PutainDeMerdeError> {
     let tree = self.get_tree()?;
@@ -438,9 +439,21 @@ impl App {
         if let Some(content) = sel.data() {
           match (ty, content) {
             (None | Some(DataType::File), NodeData::File(path)) => {
-              println!("{}", path.display())
+              if open {
+                self.ui.open_with_editor(path)?;
+              } else {
+                println!("{}", path.display())
+              }
             }
-            (None | Some(DataType::Link), NodeData::Link(link)) => println!("{}", link),
+
+            (None | Some(DataType::Link), NodeData::Link(link)) => {
+              if open {
+                self.ui.open_uri(link)?;
+              } else {
+                println!("{}", link);
+              }
+            }
+
             _ => Err(NodeError::MismatchDataType)?,
           }
         }

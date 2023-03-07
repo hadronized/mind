@@ -124,6 +124,14 @@ pub enum Command {
     #[arg(name = "type", short, long, value_enum)]
     ty: Option<DataType>,
 
+    /// Open a node if it contains data.
+    ///
+    /// “Opening” is contextual: if the node is a file node, the file will be edited with your editor (either via the
+    /// $EDITOR environment variable, or via the edit.editor configuration path). If it’s a link node, a command used
+    /// to open URI will be used, depending on your operating system.
+    #[arg(short, long)]
+    open: bool,
+
     #[command(subcommand)]
     cmd: DataCommand,
   },
