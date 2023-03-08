@@ -18,3 +18,5 @@ jobs:
           rustup component add rustfmt
       - name: rustfmt
         run: cargo fmt -- --check
+      - name: clippy
+        run: cargo clippy
