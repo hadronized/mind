@@ -4,7 +4,7 @@ mod data_file;
 mod ui;
 
 use clap::Parser;
-use cli::{Command, DataCommand, DataType, InsertMode, CLI};
+use cli::{Cli, Command, DataCommand, DataType, InsertMode};
 use colored::Colorize;
 use config::Config;
 use data_file::{DataFileStore, DataFileStoreError};
@@ -19,12 +19,12 @@ use std::{fs, io};
 use thiserror::Error;
 use ui::{UIError, UI};
 
-const PROJECT_ICON: &'static str = " ";
+const PROJECT_ICON: &str = " ";
 
 /// The top-level type holding everything that the application is about.
 struct App {
   config: Config,
-  cli: CLI,
+  cli: Cli,
   ui: UI,
   data_file_store: DataFileStore,
 }
@@ -32,7 +32,7 @@ struct App {
 impl App {
   fn new() -> Result<Self, PutainDeMerdeError> {
     let config = Self::load_config();
-    let cli = CLI::parse();
+    let cli = Cli::parse();
     let ui = UI::new(&config);
     let data_dir = config
       .persistence
@@ -93,12 +93,8 @@ impl App {
     let path = path.as_ref();
 
     // ensure all parent directories are created
-    match path.parent() {
-      Some(parent) => {
-        fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
-      }
-
-      _ => (),
+    if let Some(parent) = path.parent() {
+      fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
     }
 
     let serialized =
@@ -115,12 +111,8 @@ impl App {
       .ok_or(PutainDeMerdeError::NoForestPath)?;
 
     // ensure all parent directories are created
-    match path.parent() {
-      Some(parent) => {
-        fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
-      }
-
-      _ => (),
+    if let Some(parent) = path.parent() {
+      fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
     }
 
     let serialized =
@@ -136,12 +128,8 @@ impl App {
 
   /// Start the application by adding an error handler layer.
   fn bootstrap() {
-    match Self::new().and_then(Self::run) {
-      Err(err) => {
-        eprintln!("{}", err.to_string().red());
-      }
-
-      _ => (),
+    if let Err(err) = Self::new().and_then(Self::run) {
+      eprintln!("{}", err.to_string().red());
     }
   }
 
@@ -194,10 +182,7 @@ impl App {
           forest
             .cwd_tree(cwd.clone())
             .cloned()
-            .map(|tree| AppTree::Forest {
-              forest,
-              tree: tree.clone(),
-            })
+            .map(|tree| AppTree::Forest { forest, tree })
             .ok_or_else(|| PutainDeMerdeError::NoCWDTree(cwd))
         } else {
           self.load_forest().map(|forest| AppTree::Forest {
@@ -221,12 +206,8 @@ impl App {
     let tree = Tree::new(name, PROJECT_ICON);
 
     // if we have passed a specific tree path, create it at the given path and return
-    match self.cli.path {
-      Some(ref tree_path) => {
-        return Self::persist_tree_to_path(&tree, tree_path);
-      }
-
-      _ => (),
+    if let Some(ref tree_path) = self.cli.path {
+      return Self::persist_tree_to_path(&tree, tree_path);
     }
 
     let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
@@ -352,8 +333,8 @@ impl App {
     open: bool,
     node: &Node,
   ) -> Result<(), PutainDeMerdeError> {
-    match node.data() {
-      Some(content) => match (ty, content) {
+    if let Some(content) = node.data() {
+      match (ty, content) {
         (None | Some(DataType::File), NodeData::File(path)) => {
           if open {
             self.ui.open_with_editor(path)?;
@@ -371,9 +352,7 @@ impl App {
         }
 
         _ => Err(NodeError::MismatchDataType)?,
-      },
-
-      None => (),
+      }
     }
 
     Ok(())
@@ -492,7 +471,7 @@ impl App {
     ty: Option<DataType>,
   ) -> Result<(), PutainDeMerdeError> {
     let tree = self.get_tree()?;
-    let prefix = sel.as_deref().unwrap_or("/");
+    let prefix = sel.unwrap_or("/");
     let filter = ty.map(DataType::to_filter).unwrap_or_default();
 
     let sel = self
