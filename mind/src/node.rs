@@ -69,8 +69,14 @@ impl Tree {
   }
 
   /// Get a [`Node`] by path, e.g. `/root/a/b/c/d`.
-  pub fn get_node_by_path<'a>(&self, path: impl IntoIterator<Item = &'a str>) -> Option<Node> {
-    self.node.get_node_by_path(path.into_iter())
+  pub fn get_node_by_path<'a>(
+    &self,
+    path: impl IntoIterator<Item = &'a str>,
+    auto_create_nodes: bool,
+  ) -> Option<Node> {
+    self
+      .node
+      .get_node_by_path(path.into_iter(), auto_create_nodes)
   }
 }
 
@@ -237,7 +243,11 @@ impl Node {
     (line, None)
   }
 
-  fn get_node_by_path<'a>(&self, mut path: impl Iterator<Item = &'a str>) -> Option<Self> {
+  fn get_node_by_path<'a>(
+    &self,
+    mut path: impl Iterator<Item = &'a str>,
+    auto_create_nodes: bool,
+  ) -> Option<Self> {
     let node = self.inner.borrow();
 
     match path.next() {
@@ -245,12 +255,25 @@ impl Node {
 
       Some(node_name) => {
         // find the node in the children list, and if it doesn’t exist, it means the node we are looking for doesn’t exist;
-        // abord early
-        node
+        // abort early if we don’t need to create the node
+        match node
           .children
           .iter()
-          .find(|node| node.inner.borrow().name == node_name)?
-          .get_node_by_path(path)
+          .find(|node| node.inner.borrow().name == node_name)
+        {
+          Some(child) => child.get_node_by_path(path, auto_create_nodes),
+          None => {
+            drop(node);
+
+            if auto_create_nodes {
+              let child = Node::new(node_name, "");
+              self.insert_bottom(child.clone());
+              child.get_node_by_path(path, auto_create_nodes)
+            } else {
+              None
+            }
+          }
+        }
       }
     }
   }
@@ -709,7 +732,7 @@ mod tests {
         .map(|node| node.name.as_str()),
       Some("root")
     );
-    assert_eq!(tree.get_node_by_path(["test"]), None);
+    assert_eq!(tree.get_node_by_path(["test"], false), None);
 
     let tree = Tree::from_encoding(encoding::Tree {
       version: Version::default(),
@@ -726,7 +749,7 @@ mod tests {
         .map(|node| node.name.as_str()),
       Some("root")
     );
-    assert_eq!(tree.get_node_by_path(["test"]), None);
+    assert_eq!(tree.get_node_by_path(["test"], false), None);
   }
 
   // this tests a couple of queries on this tree:
@@ -776,7 +799,7 @@ mod tests {
     );
     assert_eq!(
       tree
-        .get_node_by_path(["a"])
+        .get_node_by_path(["a"], false)
         .as_ref()
         .map(|node| node.inner.borrow())
         .as_ref()
@@ -785,7 +808,7 @@ mod tests {
     );
     assert_eq!(
       tree
-        .get_node_by_path(["a", "x"])
+        .get_node_by_path(["a", "x"], false)
         .as_ref()
         .map(|node| node.inner.borrow())
         .as_ref()
@@ -794,7 +817,7 @@ mod tests {
     );
     assert_eq!(
       tree
-        .get_node_by_path(["a", "y"])
+        .get_node_by_path(["a", "y"], false)
         .as_ref()
         .map(|node| node.inner.borrow())
         .as_ref()
@@ -803,7 +826,7 @@ mod tests {
     );
     assert_eq!(
       tree
-        .get_node_by_path(["b"])
+        .get_node_by_path(["b"], false)
         .as_ref()
         .map(|node| node.inner.borrow())
         .as_ref()
@@ -812,7 +835,7 @@ mod tests {
     );
     assert_eq!(
       tree
-        .get_node_by_path(["b", "z"])
+        .get_node_by_path(["b", "z"], false)
         .as_ref()
         .map(|node| node.inner.borrow())
         .as_ref()
@@ -821,7 +844,7 @@ mod tests {
     );
     assert_eq!(
       tree
-        .get_node_by_path(["c"])
+        .get_node_by_path(["c"], false)
         .as_ref()
         .map(|node| node.inner.borrow())
         .as_ref()
@@ -859,14 +882,14 @@ mod tests {
 
     assert!(matches!(
       tree
-        .get_node_by_path(["a", "x"])
+        .get_node_by_path(["a", "x"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(0)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["a", "y"])
+        .get_node_by_path(["a", "y"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(1)
@@ -886,69 +909,69 @@ mod tests {
     node.insert_top(Node::new("a", ""));
 
     tree
-      .get_node_by_path(["c"])
+      .get_node_by_path(["c"], false)
       .unwrap()
       .insert_after(Node::new("d", ""))
       .unwrap();
 
     tree
-      .get_node_by_path(["x"])
+      .get_node_by_path(["x"], false)
       .unwrap()
       .insert_before(Node::new("w", ""))
       .unwrap();
 
     assert!(matches!(
       tree
-        .get_node_by_path(["a"])
+        .get_node_by_path(["a"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(0)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["b"])
+        .get_node_by_path(["b"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(1)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["c"])
+        .get_node_by_path(["c"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(2)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["d"])
+        .get_node_by_path(["d"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(3)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["w"])
+        .get_node_by_path(["w"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(4)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["x"])
+        .get_node_by_path(["x"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(5)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["y"])
+        .get_node_by_path(["y"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(6)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["z"])
+        .get_node_by_path(["z"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(7)
@@ -963,15 +986,15 @@ mod tests {
     node.insert_bottom(Node::new("x", ""));
     node.insert_bottom(Node::new("y", ""));
 
-    let x = tree.get_node_by_path(["x"]).unwrap();
+    let x = tree.get_node_by_path(["x"], false).unwrap();
     x.insert_bottom(Node::new("a", ""));
     x.insert_bottom(Node::new("b", ""));
     x.insert_bottom(Node::new("c", ""));
 
-    let b = tree.get_node_by_path(["x", "b"]).unwrap();
+    let b = tree.get_node_by_path(["x", "b"], false).unwrap();
     x.delete(b).unwrap();
 
-    assert_eq!(tree.get_node_by_path(["x", "b"]), None);
+    assert_eq!(tree.get_node_by_path(["x", "b"], false), None);
   }
 
   #[test]
@@ -986,12 +1009,12 @@ mod tests {
     node.insert_top(Node::new("b", ""));
     node.insert_top(Node::new("a", ""));
 
-    let a = tree.get_node_by_path(["a"]).unwrap();
-    let b = tree.get_node_by_path(["b"]).unwrap();
-    let c = tree.get_node_by_path(["c"]).unwrap();
-    let x = tree.get_node_by_path(["x"]).unwrap();
-    let y = tree.get_node_by_path(["y"]).unwrap();
-    let z = tree.get_node_by_path(["z"]).unwrap();
+    let a = tree.get_node_by_path(["a"], false).unwrap();
+    let b = tree.get_node_by_path(["b"], false).unwrap();
+    let c = tree.get_node_by_path(["c"], false).unwrap();
+    let x = tree.get_node_by_path(["x"], false).unwrap();
+    let y = tree.get_node_by_path(["y"], false).unwrap();
+    let z = tree.get_node_by_path(["z"], false).unwrap();
 
     a.move_bottom(x.clone()).unwrap();
     a.move_top(y).unwrap();
@@ -1001,35 +1024,35 @@ mod tests {
 
     assert!(matches!(
       tree
-        .get_node_by_path(["a", "y"])
+        .get_node_by_path(["a", "y"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(0)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["a", "x"])
+        .get_node_by_path(["a", "x"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(1)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["a", "b"])
+        .get_node_by_path(["a", "b"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(2)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["a", "z"])
+        .get_node_by_path(["a", "z"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(3)
     ));
     assert!(matches!(
       tree
-        .get_node_by_path(["c"])
+        .get_node_by_path(["c"], false)
         .unwrap()
         .get_index_from_parent(),
       Ok(1)
@@ -1044,7 +1067,7 @@ mod tests {
     node.insert_bottom(Node::new("x", ""));
     node.insert_bottom(Node::new("y", ""));
 
-    let x = tree.get_node_by_path(["x"]).unwrap();
+    let x = tree.get_node_by_path(["x"], false).unwrap();
     x.insert_bottom(Node::new("a", ""));
     x.insert_bottom(Node::new("b", ""));
     x.insert_bottom(Node::new("c", ""));
