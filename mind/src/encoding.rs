@@ -1,8 +1,7 @@
 //! Encoding representation of trees and nodes
 
-use std::path::PathBuf;
-
 use serde::{de::Error as _, Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TreeType {
@@ -64,13 +63,16 @@ pub struct Node {
   pub(crate) contents: Vec<Text>,
 
   /// Data file associated with, if any.
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub(crate) data: Option<PathBuf>,
 
   /// Link associated with, if any.
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub(crate) url: Option<String>,
 
   /// Children nodes, if any.
   #[serde(default)]
+  #[serde(skip_serializing_if = "Vec::is_empty")]
   pub(crate) children: Vec<Node>,
 }
 
@@ -110,4 +112,28 @@ impl Default for Version {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Text {
   pub text: String,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::Node;
+
+  #[test]
+  fn serialize() {
+    let s = serde_json::to_string(&Node::new_by_expand_state("name", true, Vec::new()));
+    assert_eq!(
+      s.unwrap(),
+      r#"{"icon":"","is_expanded":true,"contents":[{"text":"name"}]}"#
+    );
+  }
+
+  #[test]
+  fn deserialize() {
+    let s = r#"{"icon":"","is_expanded":true,"contents":[{"text":"name"}]}"#;
+    let node = serde_json::from_str::<Node>(s);
+    assert_eq!(
+      node.unwrap(),
+      Node::new_by_expand_state("name", true, Vec::new())
+    );
+  }
 }
