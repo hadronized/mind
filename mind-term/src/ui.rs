@@ -11,6 +11,7 @@ use thiserror::Error;
 
 #[derive(Debug)]
 pub struct UI {
+  auto_create_nodes: bool,
   fuzzy_term_program: Option<String>,
   fuzzy_term_prompt_opt: Option<String>,
   editor: Option<String>,
@@ -19,6 +20,7 @@ pub struct UI {
 impl UI {
   pub fn new(config: &Config) -> Self {
     Self {
+      auto_create_nodes: config.tree.auto_create_nodes,
       fuzzy_term_program: config.interactive.fuzzy_term_program().map(Into::into),
       fuzzy_term_prompt_opt: config.interactive.fuzzy_term_prompt_opt().map(Into::into),
       editor: config.ui.editor.clone(),
@@ -34,7 +36,7 @@ impl UI {
   ) -> Option<Node> {
     {
       sel
-        .and_then(|path| tree.get_node_by_path(path_iter(path)))
+        .and_then(|path| tree.get_node_by_path(path_iter(path), self.auto_create_nodes))
         .or_else(|| {
           let prompt = match picker_opts {
             // no explicit selection; try to use a fuzzy finder
@@ -62,7 +64,7 @@ impl UI {
             return None;
           }
 
-          tree.get_node_by_path(path_iter(path.trim()))
+          tree.get_node_by_path(path_iter(path.trim()), self.auto_create_nodes)
         })
     }
   }

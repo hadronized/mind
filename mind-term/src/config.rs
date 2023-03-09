@@ -34,6 +34,9 @@ pub struct Config {
 
   #[serde(default)]
   pub ui: UIConfig,
+
+  #[serde(default)]
+  pub tree: TreeConfig,
 }
 
 impl Config {
@@ -111,4 +114,10 @@ impl InteractiveConfig {
 pub struct UIConfig {
   pub editor: Option<String>,
   pub extension: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TreeConfig {
+  /// Whether nodes should be automatically created when selected if they don’t exist yet.
+  pub auto_create_nodes: bool,
 }
