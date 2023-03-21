@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mind::node::NodeFilter;
+use mind_tree::node::NodeFilter;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
