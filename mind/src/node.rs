@@ -533,6 +533,15 @@ pub enum NodeFilter {
 }
 
 impl NodeFilter {
+  pub fn new(file: bool, uri: bool) -> Self {
+    match (file, uri) {
+      (true, true) => Self::FileOrLink,
+      (true, false) => Self::FileOnly,
+      (false, true) => Self::LinkOnly,
+      (false, false) => Self::Always,
+    }
+  }
+
   fn accepts(&self, node: &Node) -> bool {
     match self {
       NodeFilter::Always => true,

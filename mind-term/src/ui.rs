@@ -1,7 +1,7 @@
 //! User Interface types and functions
 
 use crate::config::Config;
-use mind::node::{path_iter, Node, NodeFilter, Tree};
+use mind::node::{NodeFilter, Tree};
 use std::{
   io::{self, read_to_string, stdin, stdout, Write},
   path::Path,
@@ -11,7 +11,6 @@ use thiserror::Error;
 
 #[derive(Debug)]
 pub struct UI {
-  auto_create_nodes: bool,
   fuzzy_term_program: Option<String>,
   fuzzy_term_prompt_opt: Option<String>,
   editor: Option<String>,
@@ -20,62 +19,47 @@ pub struct UI {
 impl UI {
   pub fn new(config: &Config) -> Self {
     Self {
-      auto_create_nodes: config.tree.auto_create_nodes,
       fuzzy_term_program: config.interactive.fuzzy_term_program().map(Into::into),
       fuzzy_term_prompt_opt: config.interactive.fuzzy_term_prompt_opt().map(Into::into),
       editor: config.ui.editor.clone(),
     }
   }
 
-  pub fn get_base_sel(
+  pub fn select_path(
     &self,
     picker_opts: PickerOptions,
-    sel: Option<&str>,
     filter: NodeFilter,
     tree: &Tree,
-  ) -> Option<Node> {
-    {
-      sel
-        .and_then(|path| tree.get_node_by_path(path_iter(path), self.auto_create_nodes))
-        .or_else(|| {
-          let prompt = match picker_opts {
-            // no explicit selection; try to use a fuzzy finder
-            PickerOptions::NonInteractive => return None,
-            PickerOptions::Interactive { prompt } => prompt,
-          };
+  ) -> Option<String> {
+    let PickerOptions::Interactive { prompt } = picker_opts else { return None; };
+    let program = self.fuzzy_term_program.as_ref()?;
+    let mut child = std::process::Command::new(program);
+    child.stdin(Stdio::piped()).stdout(Stdio::piped());
 
-          let program = self.fuzzy_term_program.as_ref()?;
-          let mut child = std::process::Command::new(program);
-          child.stdin(Stdio::piped()).stdout(Stdio::piped());
-
-          if let Some(ref prompt_prefix) = self.fuzzy_term_prompt_opt {
-            child.arg(format!("{} {}", prompt_prefix, prompt));
-          }
-
-          let child = child.spawn().ok()?;
-          let mut child_stdin = child.stdin?;
-          tree
-            .root()
-            .write_paths("/", filter, &mut child_stdin)
-            .ok()?; // FIXME: muted error?!
-          let path = read_to_string(&mut child.stdout?).ok()?; // FIXME: muted error, do we really like that?
-
-          if path.is_empty() {
-            return None;
-          }
-
-          tree.get_node_by_path(path_iter(path.trim()), self.auto_create_nodes)
-        })
+    if let Some(ref prompt_prefix) = self.fuzzy_term_prompt_opt {
+      child.arg(format!("{} {}", prompt_prefix, prompt));
     }
+
+    let child = child.spawn().ok()?;
+    let mut child_stdin = child.stdin?;
+    tree
+      .root()
+      .write_paths("/", filter, &mut child_stdin)
+      .ok()?; // FIXME: muted error?!
+    read_to_string(&mut child.stdout?)
+      .ok()
+      .map(|s| s.trim().to_owned()) // FIXME: muted error, do we really like that?
   }
 
-  pub fn get_input_string(&self, prompt: impl AsRef<str>) -> Result<String, UIError> {
-    print!("{}", prompt.as_ref());
-    stdout().flush().map_err(UIError::UserInput)?;
+  pub fn input(&self, picker_opts: PickerOptions) -> Option<String> {
+    let PickerOptions::Interactive { prompt } = picker_opts else { return None; };
+
+    print!("{}", prompt);
+    stdout().flush().ok()?;
 
     let mut input = String::new();
-    let _ = stdin().read_line(&mut input).map_err(UIError::UserInput)?;
-    Ok(input)
+    let _ = stdin().read_line(&mut input).ok()?;
+    Some(input)
   }
 
   /// Get the editor name.

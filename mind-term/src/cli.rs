@@ -1,10 +1,22 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use mind::node::NodeFilter;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
+#[command(
+  author = "Dimitri Sabadie <dimitri.sabadie@gmail.com>",
+  name = "mind",
+  version,
+  about = "Organize your thoughts in a tree-like structure"
+)]
 pub struct Cli {
-  /// Open a specific Mind tree at a given path.
+  #[command(subcommand)]
+  pub cmd: Command,
+}
+
+/// Common arguments used by most actions.
+#[derive(Args, Debug)]
+pub struct CommonArgs {
   #[arg(short, long)]
   pub path: Option<PathBuf>,
 
@@ -23,39 +35,34 @@ pub struct Cli {
   /// When run in interactive mode, base selections can be selected via a fuzzy program.
   #[arg(short, long)]
   pub interactive: bool,
-
-  #[command(subcommand)]
-  pub cmd: Command,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
   /// Initialize a new Mind tree.
-  Init { name: String },
+  Init {
+    #[clap(flatten)]
+    common_args: CommonArgs,
+
+    /// Name of the tree. Can be changed later.
+    name: Option<String>,
+  },
 
   /// Insert a new node.
   ///
   /// This command requires a base selection.
   #[command(alias = "ins")]
   Insert {
+    /// Use a specific Mind tree at a given path.
+    #[clap(flatten)]
+    common_args: CommonArgs,
+
     #[arg(default_value_t, short, long, value_enum)]
     mode: InsertMode,
 
-    /// Select a base node to operate on.
+    /// Source node.
     #[arg(short, long)]
-    sel: Option<String>,
-
-    /// Associate a file upon creation.
-    #[arg(short, long)]
-    file: bool,
-
-    /// Associate a link upon creation.
-    #[arg(short, long)]
-    link: Option<String>,
-
-    /// Open associated data, if any, after insertion.
-    #[arg(short, long)]
-    open: bool,
+    source: Option<String>,
 
     /// Name of the node to create.
     #[arg(short, long)]
@@ -67,31 +74,40 @@ pub enum Command {
   /// This command requires a base selection.
   #[command(alias = "rm")]
   Remove {
+    #[clap(flatten)]
+    common_args: CommonArgs,
+
     /// Select a base node to operate on.
     #[arg(short, long)]
-    sel: Option<String>,
+    source: Option<String>,
   },
 
   /// Rename a node.
   ///
   /// This command requires a base selection.
   Rename {
-    /// Select a base node to operate on.
+    #[clap(flatten)]
+    common_args: CommonArgs,
+
+    /// Node to rename.
     #[arg(short, long)]
-    sel: Option<String>,
+    source: Option<String>,
 
     /// New name of the node.
     #[arg(short, long)]
-    name: Option<String>,
+    new: Option<String>,
   },
 
   /// Change the icon of a node.
   ///
   /// This command requires a base selection
   Icon {
-    /// Select a base node to operate on.
+    #[command(flatten)]
+    common_args: CommonArgs,
+
+    /// Node to change the icon.
     #[arg(short, long)]
-    sel: Option<String>,
+    source: Option<String>,
 
     /// New icon of the node.
     #[arg(short, long)]
@@ -103,38 +119,47 @@ pub enum Command {
   /// The selected node is the node to move and the path is the destination.
   #[command(alias = "mv")]
   Move {
+    #[clap(flatten)]
+    common_args: CommonArgs,
+
     #[arg(default_value_t, short, value_enum)]
     mode: InsertMode,
 
-    /// Select a base node to operate on.
+    /// Source path.
     #[arg(short, long)]
-    sel: Option<String>,
+    source: Option<String>,
 
-    /// Destination path
+    /// Destination path.
     #[arg(short, long)]
     dest: Option<String>,
   },
 
   /// Get all paths in a given node.
   Paths {
-    /// Select a base node to operate on.
-    #[arg(short, long)]
-    sel: Option<String>,
+    #[command(flatten)]
+    common_args: CommonArgs,
 
     /// Data type to use for the node.
-    #[arg(name = "type", short, long, value_enum)]
+    #[arg(id = "type", short, long, value_enum)]
     ty: Option<DataType>,
+
+    /// Select a base node to operate on.
+    #[arg(short, long)]
+    source: Option<String>,
   },
 
   /// Get associated data with a node.
-  Data {
-    /// Select a base node to operate on.
-    #[arg(short, long)]
-    sel: Option<String>,
+  Get {
+    #[clap(flatten)]
+    common_args: CommonArgs,
 
-    /// Data type to use for the node.
-    #[arg(name = "type", short, long, value_enum)]
-    ty: Option<DataType>,
+    /// Filter by file nodes.
+    #[arg(short, long)]
+    file: bool,
+
+    /// Filter by URI nodes.
+    #[arg(short, long)]
+    uri: bool,
 
     /// Open a node if it contains data.
     ///
@@ -144,21 +169,35 @@ pub enum Command {
     #[arg(short, long)]
     open: bool,
 
-    #[command(subcommand)]
-    cmd: DataCommand,
+    /// Select a base node to operate on.
+    #[arg(short, long)]
+    source: Option<String>,
   },
-}
 
-#[derive(Debug, Subcommand)]
-pub enum DataCommand {
-  Get,
-
+  /// Associate data to a node.
   Set {
-    /// If you ask for a given type of data and the node has no data associated with, the data operation will be
-    /// refused. You can use this switch to create the data before operating on it. Depending on the data type, the
-    /// content will be interpreted differently.
-    #[arg(default_value_t)]
-    content: String,
+    #[clap(flatten)]
+    common_args: CommonArgs,
+
+    /// Associate a file with the node.
+    #[arg(short, long)]
+    file: bool,
+
+    /// Associate a URI with the node.
+    #[arg(short, long)]
+    uri: Option<String>,
+
+    /// Open a node if it contains data.
+    ///
+    /// “Opening” is contextual: if the node is a file node, the file will be edited with your editor (either via the
+    /// $EDITOR environment variable, or via the edit.editor configuration path). If it’s a link node, a command used
+    /// to open URI will be used, depending on your operating system.
+    #[arg(short, long)]
+    open: bool,
+
+    /// Select a base node to operate on.
+    #[arg(short, long)]
+    source: Option<String>,
   },
 }
 

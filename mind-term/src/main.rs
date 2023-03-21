@@ -4,12 +4,12 @@ mod data_file;
 mod ui;
 
 use clap::Parser;
-use cli::{Cli, Command, DataCommand, DataType, InsertMode};
+use cli::{Cli, Command, CommonArgs, DataType, InsertMode};
 use colored::Colorize;
 use config::Config;
 use data_file::{DataFileStore, DataFileStoreError};
 use mind::forest::Forest;
-use mind::node::{Node, NodeData, NodeError, NodeFilter};
+use mind::node::{path_iter, Node, NodeData, NodeError, NodeFilter};
 use mind::{encoding, node::Tree};
 use std::borrow::Cow;
 use std::env::current_dir;
@@ -136,36 +136,65 @@ impl App {
   /// Start and dispatch the application by looking at the CLI, config, etc.
   fn run(self) -> Result<(), PutainDeMerdeError> {
     match &self.cli.cmd {
-      Command::Init { name } => self.run_init_cmd(name),
+      Command::Init { common_args, name } => self.run_init_cmd(common_args, name.as_deref()),
+
       Command::Insert {
+        common_args,
         mode,
-        sel,
-        file,
-        link,
-        open,
+        source,
         name,
-      } => self.run_insert_cmd(
-        *mode,
-        sel.as_deref(),
-        *file,
-        link.as_deref(),
-        *open,
-        name.as_deref(),
-      ),
-      Command::Remove { sel } => self.run_remove_cmd(sel.as_deref()),
-      Command::Rename { sel, name } => self.run_rename_cmd(sel.as_deref(), name.as_deref()),
-      Command::Icon { sel, icon } => self.run_icon_cmd(sel.as_deref(), icon.as_deref()),
-      Command::Move { mode, sel, dest } => {
-        self.run_move_cmd(*mode, sel.as_deref(), dest.as_deref())
-      }
-      // TODO: add filtering
-      Command::Paths { sel, ty } => self.run_paths_cmd(sel.as_deref(), *ty),
-      Command::Data { sel, ty, open, cmd } => self.run_data_cmd(sel.as_deref(), *ty, *open, cmd),
+      } => self.run_insert_cmd(common_args, *mode, source.as_deref(), name.as_deref()),
+
+      Command::Remove {
+        common_args,
+        source,
+      } => self.run_remove_cmd(common_args, source.as_deref()),
+
+      Command::Rename {
+        common_args,
+        source,
+        new,
+      } => self.run_rename_cmd(common_args, source.as_deref(), new.as_deref()),
+
+      Command::Icon {
+        common_args,
+        source,
+        icon,
+      } => self.run_icon_cmd(common_args, source.as_deref(), icon.as_deref()),
+
+      Command::Move {
+        common_args,
+        mode,
+        source,
+        dest,
+      } => self.run_move_cmd(common_args, *mode, source.as_deref(), dest.as_deref()),
+
+      Command::Paths {
+        common_args,
+        ty,
+        source,
+      } => self.run_paths_cmd(common_args, *ty, source.as_deref()),
+
+      Command::Get {
+        common_args,
+        file,
+        uri,
+        open,
+        source,
+      } => self.run_get_cmd(common_args, *file, *uri, *open, source.as_deref()),
+
+      Command::Set {
+        common_args,
+        file,
+        uri,
+        open,
+        source,
+      } => self.run_set_cmd(common_args, *file, uri.as_deref(), *open, source.as_deref()),
     }
   }
 
-  fn get_tree(&self) -> Result<AppTree, PutainDeMerdeError> {
-    match self.cli.path {
+  fn get_tree(&self, common_args: &CommonArgs) -> Result<AppTree, PutainDeMerdeError> {
+    match common_args.path {
       Some(ref tree_path) => Self::load_tree(tree_path).map(|tree| AppTree::Specific {
         path: tree_path.to_owned(),
         tree,
@@ -174,10 +203,10 @@ impl App {
       None => {
         let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
 
-        if self.cli.local {
+        if common_args.local {
           let path = Self::local_mind_path(&cwd);
           Self::load_tree(&path).map(|tree| AppTree::Specific { path, tree })
-        } else if self.cli.cwd {
+        } else if common_args.cwd {
           let forest = self.load_forest()?;
           forest
             .cwd_tree(cwd.clone())
@@ -202,23 +231,39 @@ impl App {
     }
   }
 
-  fn run_init_cmd(&self, name: &str) -> Result<(), PutainDeMerdeError> {
+  fn run_init_cmd(
+    &self,
+    common_args: &CommonArgs,
+    name: Option<&str>,
+  ) -> Result<(), PutainDeMerdeError> {
+    let name = name
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .input(ui::PickerOptions::either(
+            common_args.interactive,
+            "Mind tree name: ",
+          ))
+          .map(Cow::from)
+      })
+      .ok_or(PutainDeMerdeError::EmptyName)?;
     let tree = Tree::new(name, PROJECT_ICON);
 
     // if we have passed a specific tree path, create it at the given path and return
-    if let Some(ref tree_path) = self.cli.path {
+    if let Some(ref tree_path) = common_args.path {
       return Self::persist_tree_to_path(&tree, tree_path);
     }
 
     let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
 
-    if self.cli.local {
+    if common_args.local {
       let path = Self::local_mind_path(cwd);
       return Self::persist_tree_to_path(&tree, path);
     }
 
     // check if we are in CWD
-    if self.cli.cwd {
+    if common_args.cwd {
       // we need the forest first
       let mut forest = self.load_forest()?;
       forest.add_cwd_tree(cwd, tree);
@@ -243,223 +288,212 @@ impl App {
 
   fn run_insert_cmd(
     &self,
+    common_args: &CommonArgs,
     mode: InsertMode,
-    sel: Option<&str>,
-    file: bool,
-    link: Option<&str>,
-    open: bool,
+    source: Option<&str>,
     name: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
-    let tree = self.get_tree()?;
-    let sel = self
-      .ui
-      .get_base_sel(
-        ui::PickerOptions::either(self.cli.interactive, "Insert in: "),
-        sel,
-        NodeFilter::default(),
-        &tree,
-      )
+    let tree = self.get_tree(common_args)?;
+
+    let source = source
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .select_path(
+            ui::PickerOptions::either(common_args.interactive, "Insert in: "),
+            NodeFilter::default(),
+            &tree,
+          )
+          .map(Cow::from)
+      })
+      .and_then(|path| tree.get_node_by_path(path_iter(&path), self.config.tree.auto_create_nodes))
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    let name = match name {
-      Some(name) => Cow::from(name),
-      None => Cow::from(self.ui.get_input_string("New name: ")?),
-    };
-
-    let node = Node::new(name.trim(), "");
-    if node.name().is_empty() {
+    let name = name
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .input(ui::PickerOptions::either(
+            common_args.interactive,
+            "New name: ",
+          ))
+          .map(Cow::from)
+      })
+      .ok_or(PutainDeMerdeError::EmptyName)?;
+    let name = name.trim();
+    if name.is_empty() {
       return Err(PutainDeMerdeError::EmptyName);
     }
 
+    let node = Node::new(name.trim(), "");
     match mode {
-      InsertMode::InsideTop => sel.insert_top(node.clone()),
-      InsertMode::InsideBottom => sel.insert_bottom(node.clone()),
-      InsertMode::Before => sel.insert_before(node.clone())?,
-      InsertMode::After => sel.insert_after(node.clone())?,
+      InsertMode::InsideTop => source.insert_top(node),
+      InsertMode::InsideBottom => source.insert_bottom(node),
+      InsertMode::Before => source.insert_before(node)?,
+      InsertMode::After => source.insert_after(node)?,
     }
 
-    self.persist(&tree)?;
-
-    if file {
-      self.check_create_open_data(None, open, &node, "")?;
-      self.persist(&tree)?;
-    } else if let Some(content) = link {
-      self.check_create_open_data(None, open, &node, content)?;
-      self.persist(&tree)?;
-    }
-
-    Ok(())
+    self.persist(&tree)
   }
 
-  /// Check whether we need to create and associate data, and eventually open the associated data.
-  fn check_create_open_data(
+  fn run_remove_cmd(
     &self,
-    ty: Option<DataType>,
-    open: bool,
-    node: &Node,
-    content: &str,
+    common_args: &CommonArgs,
+    source: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
-    let data = match ty {
-      Some(DataType::File) => NodeData::file(content),
-      Some(DataType::Link) => NodeData::link(content),
-      None => {
-        if content.is_empty() {
-          // TODO: support automatically setting the content based on the name and a template thing
-          let path = self.data_file_store.create_data_file(
-            node.name(),
-            self.config.ui.extension.as_deref().unwrap_or(".md"),
-            "",
-          )?;
-          NodeData::file(path)
-        } else {
-          NodeData::link(content)
-        }
-      }
-    };
+    let tree = self.get_tree(common_args)?;
 
-    node.set_data(data)?;
-
-    if open {
-      self.get_open_data(ty, open, node)?;
-    }
-
-    Ok(())
-  }
-
-  /// Get or open the data associated with a node.
-  fn get_open_data(
-    &self,
-    ty: Option<DataType>,
-    open: bool,
-    node: &Node,
-  ) -> Result<(), PutainDeMerdeError> {
-    if let Some(content) = node.data() {
-      match (ty, content) {
-        (None | Some(DataType::File), NodeData::File(path)) => {
-          if open {
-            self.ui.open_with_editor(path)?;
-          } else {
-            println!("{}", path.display())
-          }
-        }
-
-        (None | Some(DataType::Link), NodeData::Link(link)) => {
-          if open {
-            self.ui.open_uri(link)?;
-          } else {
-            println!("{}", link);
-          }
-        }
-
-        _ => Err(NodeError::MismatchDataType)?,
-      }
-    }
-
-    Ok(())
-  }
-
-  fn run_remove_cmd(&self, sel: Option<&str>) -> Result<(), PutainDeMerdeError> {
-    let tree = self.get_tree()?;
-    let sel = self
-      .ui
-      .get_base_sel(
-        ui::PickerOptions::either(self.cli.interactive, "Remove: "),
-        sel,
-        NodeFilter::default(),
-        &tree,
-      )
+    let source = source
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .select_path(
+            ui::PickerOptions::either(common_args.interactive, "Remove: "),
+            NodeFilter::default(),
+            &tree,
+          )
+          .map(Cow::from)
+      })
+      .and_then(|path| tree.get_node_by_path(path_iter(&path), false))
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    let parent = sel.parent()?;
-    parent.delete(sel)?;
+    let parent = source.parent()?;
+    parent.delete(source)?;
 
     self.persist(&tree)
   }
 
   fn run_rename_cmd(
     &self,
-    sel: Option<&str>,
-    name: Option<&str>,
+    common_args: &CommonArgs,
+    source: Option<&str>,
+    new: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
-    let tree = self.get_tree()?;
-    let sel = self
-      .ui
-      .get_base_sel(
-        ui::PickerOptions::either(self.cli.interactive, "Rename: "),
-        sel,
-        NodeFilter::default(),
-        &tree,
-      )
+    let tree = self.get_tree(common_args)?;
+
+    let source = source
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .select_path(
+            ui::PickerOptions::either(common_args.interactive, "Rename: "),
+            NodeFilter::default(),
+            &tree,
+          )
+          .map(Cow::from)
+      })
+      .and_then(|path| tree.get_node_by_path(path_iter(&path), false))
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    let name = match name {
-      Some(name) => Cow::from(name),
-      None => Cow::from(self.ui.get_input_string("New node name: ")?),
-    };
+    let name = new
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .input(ui::PickerOptions::either(
+            common_args.interactive,
+            "New node name:",
+          ))
+          .map(Cow::from)
+      })
+      .ok_or(PutainDeMerdeError::EmptyName)?;
 
     let name = name.trim();
     if name.is_empty() {
       return Err(PutainDeMerdeError::EmptyName);
     }
 
-    sel.set_name(name)?;
-
+    source.set_name(name)?;
     self.persist(&tree)
   }
 
-  fn run_icon_cmd(&self, sel: Option<&str>, icon: Option<&str>) -> Result<(), PutainDeMerdeError> {
-    let tree = self.get_tree()?;
-    let sel = self
-      .ui
-      .get_base_sel(
-        ui::PickerOptions::either(self.cli.interactive, "Change icon: "),
-        sel,
-        NodeFilter::default(),
-        &tree,
-      )
+  fn run_icon_cmd(
+    &self,
+    common_args: &CommonArgs,
+    source: Option<&str>,
+    icon: Option<&str>,
+  ) -> Result<(), PutainDeMerdeError> {
+    let tree = self.get_tree(common_args)?;
+    let source = source
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .select_path(
+            ui::PickerOptions::either(common_args.interactive, "Change icon: "),
+            NodeFilter::default(),
+            &tree,
+          )
+          .map(Cow::from)
+      })
+      .and_then(|path| tree.get_node_by_path(path_iter(&path), self.config.tree.auto_create_nodes))
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    let icon = match icon {
-      Some(icon) => Cow::from(icon),
-      None => Cow::from(self.ui.get_input_string("Change node icon > ")?),
-    };
+    let icon = icon
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .input(ui::PickerOptions::either(
+            common_args.interactive,
+            "Change node icon: ",
+          ))
+          .map(Cow::from)
+      })
+      .unwrap_or_else(|| Cow::from(""));
 
-    sel.set_icon(icon.trim());
+    source.set_icon(icon.trim());
     self.persist(&tree)
   }
 
   fn run_move_cmd(
     &self,
+    common_args: &CommonArgs,
     mode: InsertMode,
-    sel: Option<&str>,
+    source: Option<&str>,
     dest: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
-    let tree = self.get_tree()?;
-    let sel = self
-      .ui
-      .get_base_sel(
-        ui::PickerOptions::either(self.cli.interactive, "Source node: "),
-        sel,
-        NodeFilter::default(),
-        &tree,
-      )
+    let tree = self.get_tree(common_args)?;
+
+    let source = source
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .select_path(
+            ui::PickerOptions::either(common_args.interactive, "Source node: "),
+            NodeFilter::default(),
+            &tree,
+          )
+          .map(Cow::from)
+      })
+      .and_then(|path| tree.get_node_by_path(path_iter(&path), self.config.tree.auto_create_nodes))
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    let dest = self
-      .ui
-      .get_base_sel(
-        ui::PickerOptions::either(self.cli.interactive, "Destination node: "),
-        dest,
-        NodeFilter::default(),
-        &tree,
-      )
+    let dest = dest
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .select_path(
+            ui::PickerOptions::either(common_args.interactive, "Destination node: "),
+            NodeFilter::default(),
+            &tree,
+          )
+          .map(Cow::from)
+      })
+      .and_then(|path| tree.get_node_by_path(path_iter(&path), self.config.tree.auto_create_nodes))
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
     match mode {
-      InsertMode::InsideTop => dest.move_top(sel)?,
-      InsertMode::InsideBottom => dest.move_bottom(sel)?,
-      InsertMode::Before => dest.move_before(sel)?,
-      InsertMode::After => dest.move_after(sel)?,
+      InsertMode::InsideTop => dest.move_top(source)?,
+      InsertMode::InsideBottom => dest.move_bottom(source)?,
+      InsertMode::Before => dest.move_before(source)?,
+      InsertMode::After => dest.move_after(source)?,
     }
 
     self.persist(&tree)
@@ -467,54 +501,165 @@ impl App {
 
   fn run_paths_cmd(
     &self,
-    sel: Option<&str>,
+    common_args: &CommonArgs,
     ty: Option<DataType>,
+    source: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
-    let tree = self.get_tree()?;
-    let prefix = sel.unwrap_or("/");
+    let tree = self.get_tree(common_args)?;
+    let prefix = source.unwrap_or("/");
     let filter = ty.map(DataType::to_filter).unwrap_or_default();
 
-    let sel = self
-      .ui
-      .get_base_sel(
-        ui::PickerOptions::either(self.cli.interactive, "Get paths: "),
-        sel,
-        NodeFilter::default(),
-        &tree,
-      )
-      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+    let source = source
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .select_path(
+            ui::PickerOptions::either(common_args.interactive, "Get paths: "),
+            filter,
+            &tree,
+          )
+          .map(Cow::from)
+      })
+      .and_then(|path| tree.get_node_by_path(path_iter(&path), self.config.tree.auto_create_nodes))
+      .unwrap_or_else(|| tree.root());
 
-    sel.write_paths(prefix, filter, &mut io::stdout())?;
+    source.write_paths(prefix, filter, &mut io::stdout())?;
+
     self.persist(&tree)
   }
 
-  fn run_data_cmd(
+  fn run_get_cmd(
     &self,
-    sel: Option<&str>,
-    ty: Option<DataType>,
+    common_args: &CommonArgs,
+    file: bool,
+    uri: bool,
     open: bool,
-    cmd: &DataCommand,
+    source: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
-    let tree = self.get_tree()?;
-    let filter = ty.map(DataType::to_filter).unwrap_or_default();
-    let sel = self
-      .ui
-      .get_base_sel(
-        ui::PickerOptions::either(self.cli.interactive, "Data node: "),
-        sel,
-        filter,
-        &tree,
-      )
+    let tree = self.get_tree(common_args)?;
+    let filter = NodeFilter::new(file, uri);
+
+    let source = source
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .select_path(
+            ui::PickerOptions::either(common_args.interactive, "Get data of: "),
+            filter,
+            &tree,
+          )
+          .map(Cow::from)
+      })
+      .and_then(|path| tree.get_node_by_path(path_iter(&path), self.config.tree.auto_create_nodes))
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    match cmd {
-      DataCommand::Get => self.get_open_data(ty, open, &sel),
+    self.get_open_data(open, &source)
+  }
 
-      DataCommand::Set { content } => {
-        self.check_create_open_data(ty, open, &sel, content)?;
-        self.persist(&tree)
+  fn run_set_cmd(
+    &self,
+    common_args: &CommonArgs,
+    file: bool,
+    uri: Option<&str>,
+    open: bool,
+    source: Option<&str>,
+  ) -> Result<(), PutainDeMerdeError> {
+    let tree = self.get_tree(common_args)?;
+
+    let source = source
+      .map(Cow::from)
+      .or_else(|| {
+        self
+          .ui
+          .select_path(
+            ui::PickerOptions::either(common_args.interactive, "Set data for: "),
+            NodeFilter::default(),
+            &tree,
+          )
+          .map(Cow::from)
+      })
+      .and_then(|path| tree.get_node_by_path(path_iter(&path), self.config.tree.auto_create_nodes))
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
+
+    match (file, uri) {
+      (true, None) => self.check_create_open_data(open, &source, "")?,
+      (true, Some(_)) => return Err(PutainDeMerdeError::CannotSetURIAndfileData),
+      (false, None) => return Err(PutainDeMerdeError::NodeOperation(NodeError::NoData)),
+      (false, Some(uri)) => {
+        let uri = if uri.is_empty() {
+          self
+            .ui
+            .input(ui::PickerOptions::either(common_args.interactive, "URI: "))
+            .map(Cow::from)
+            .ok_or(PutainDeMerdeError::EmptyURI)?
+        } else {
+          Cow::from(uri)
+        };
+        self.check_create_open_data(open, &source, &uri)?
       }
     }
+
+    self.persist(&tree)
+  }
+
+  /// Check whether we need to create and associate data, and eventually open the associated data.
+  fn check_create_open_data(
+    &self,
+    open: bool,
+    node: &Node,
+    data: &str,
+  ) -> Result<(), PutainDeMerdeError> {
+    if let Some(NodeData::File(_)) = node.data() {
+      return Err(PutainDeMerdeError::DataAlreadyExists);
+    }
+
+    let data = if data.is_empty() {
+      // TODO: support automatically setting the content based on the name and a template thing
+      let path = self.data_file_store.create_data_file(
+        node.name(),
+        self.config.ui.extension.as_deref().unwrap_or(".md"),
+        "",
+      )?;
+      NodeData::file(path)
+    } else {
+      NodeData::link(data)
+    };
+
+    // move inside above
+    node.set_data(data)?;
+
+    if open {
+      self.get_open_data(open, node)?;
+    }
+
+    Ok(())
+  }
+
+  /// Get or open the data associated with a node.
+  fn get_open_data(&self, open: bool, node: &Node) -> Result<(), PutainDeMerdeError> {
+    if let Some(content) = node.data() {
+      match content {
+        NodeData::File(path) => {
+          if open {
+            self.ui.open_with_editor(path)?;
+          } else {
+            println!("{}", path.display())
+          }
+        }
+
+        NodeData::Link(link) => {
+          if open {
+            self.ui.open_uri(link)?;
+          } else {
+            println!("{}", link);
+          }
+        }
+      }
+    }
+
+    Ok(())
   }
 }
 
@@ -533,7 +678,7 @@ pub enum PutainDeMerdeError {
   #[error("the tree or forest already exists")]
   AlreadyExists,
 
-  #[error("forbidden node operation")]
+  #[error("node error: {0}")]
   NodeOperation(#[from] NodeError),
 
   #[error("no forest path; are you running without a filesystem?")]
@@ -545,43 +690,52 @@ pub enum PutainDeMerdeError {
   #[error("no tree persisted yet")]
   NoTreePersisted,
 
-  #[error("error while serializing forest")]
+  #[error("error while serializing forest: {0}")]
   CannotSerializeForest(serde_json::Error),
 
-  #[error("error while deserializing forest")]
+  #[error("error while deserializing forest: {0}")]
   CannotDeserializeForest(serde_json::Error),
 
-  #[error("error while creating directories on the filesystem")]
+  #[error("error while creating directories on the filesystem: {0}")]
   CannotCreateDirectories(std::io::Error),
 
-  #[error("error while writing forest to the filesystem")]
+  #[error("error while writing forest to the filesystem: {0}")]
   CannotWriteForest(std::io::Error),
 
-  #[error("error while reading forest from the filesystem")]
+  #[error("error while reading forest from the filesystem: {0}")]
   CannotReadForest(std::io::Error),
 
-  #[error("error while serializing specific tree from the filesystem")]
+  #[error("error while serializing specific tree from the filesystem: {0}")]
   CannotSerializeTree(serde_json::Error),
 
-  #[error("error while deserializing specific tree from the filesystem")]
+  #[error("error while deserializing specific tree from the filesystem: {0}")]
   CannotDeserializeTree(serde_json::Error),
 
-  #[error("error while reading specific tree from the filesystem")]
+  #[error("error while reading specific tree from the filesystem: {0}")]
   CannotReadTree(std::io::Error),
 
-  #[error("error while writing specific tree from the filesystem")]
+  #[error("error while writing specific tree from the filesystem: {0}")]
   CannotWriteTree(std::io::Error),
 
-  #[error("no current working directory")]
+  #[error("no current working directory: {0}")]
   NoCWD(std::io::Error),
 
-  #[error("no such CWD-based tree")]
+  #[error("no such CWD-based tree: {0}")]
   NoCWDTree(PathBuf),
 
   #[error("node with empty name")]
   EmptyName,
 
-  #[error("cannot write a path")]
+  #[error("node with no URI")]
+  EmptyURI,
+
+  #[error("data already exists and cannot be replaced")]
+  DataAlreadyExists,
+
+  #[error("cannot set both URI and file data on a node")]
+  CannotSetURIAndfileData,
+
+  #[error("cannot write a path: {0}")]
   CannotWritePath(io::Error),
 
   #[error("UI error: {0}")]
