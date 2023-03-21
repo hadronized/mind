@@ -7,7 +7,6 @@ description = "Organize your thoughts in a tree-like structure"
 homepage = "https://github.com/phaazon/mind"
 repository = "https://github.com/phaazon/mind"
 documentation = "https://docs.rs/mind-tree"
-readme = "README.md"
 edition = "2021"
 rust-version = "1.66.0"
 
