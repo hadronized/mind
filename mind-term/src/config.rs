@@ -49,6 +49,12 @@ impl Config {
   /// Load the [`Config`] from [`Config::path`].
   pub fn load() -> Result<Self, ConfigError> {
     let path = Self::path()?;
+
+    if !path.is_file() {
+      // no configuration; we will use the default
+      return Ok(Self::default());
+    }
+
     let contents = read_to_string(path)?;
     Ok(toml::from_str(&contents)?)
   }
