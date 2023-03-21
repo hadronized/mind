@@ -1,12 +1,12 @@
 [package]
-name = "mind"
+name = "mind-tree"
 version = "0.1.0"
 authors = ["Dimitri Sabadie <dimitri.sabadie@gmail.com>"]
 license = "BSD-3-Clause"
-description = "???"
+description = "Organize your thoughts in a tree-like structure"
 homepage = "https://github.com/phaazon/mind"
 repository = "https://github.com/phaazon/mind"
-#documentation = "https://docs.rs/mind-editor"
+documentation = "https://docs.rs/mind-tree"
 readme = "README.md"
 edition = "2021"
 rust-version = "1.66.0"
