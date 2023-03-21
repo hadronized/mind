@@ -130,6 +130,7 @@ impl App {
   fn bootstrap() {
     if let Err(err) = Self::new().and_then(Self::run) {
       eprintln!("{}", err.to_string().red());
+      std::process::exit(1);
     }
   }
 
