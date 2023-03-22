@@ -185,7 +185,7 @@ pub enum Command {
 
     /// Associate a URI with the node.
     #[arg(short, long)]
-    uri: Option<String>,
+    uri: Option<Option<String>>,
 
     /// Open a node if it contains data.
     ///

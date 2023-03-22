@@ -190,7 +190,13 @@ impl App {
         uri,
         open,
         source,
-      } => self.run_set_cmd(common_args, *file, uri.as_deref(), *open, source.as_deref()),
+      } => self.run_set_cmd(
+        common_args,
+        *file,
+        uri.as_ref().map(|o| o.as_deref()),
+        *open,
+        source.as_deref(),
+      ),
     }
   }
 
@@ -564,7 +570,7 @@ impl App {
     &self,
     common_args: &CommonArgs,
     file: bool,
-    uri: Option<&str>,
+    uri: Option<Option<&str>>,
     open: bool,
     source: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
@@ -590,15 +596,15 @@ impl App {
       (true, Some(_)) => return Err(PutainDeMerdeError::CannotSetURIAndfileData),
       (false, None) => return Err(PutainDeMerdeError::NodeOperation(NodeError::NoData)),
       (false, Some(uri)) => {
-        let uri = if uri.is_empty() {
-          self
-            .ui
-            .input(ui::PickerOptions::either(common_args.interactive, "URI: "))
-            .map(Cow::from)
-            .ok_or(PutainDeMerdeError::EmptyURI)?
-        } else {
-          Cow::from(uri)
-        };
+        let uri = uri
+          .map(Cow::from)
+          .or_else(|| {
+            self
+              .ui
+              .input(ui::PickerOptions::either(common_args.interactive, "URI: "))
+              .map(Cow::from)
+          })
+          .ok_or(PutainDeMerdeError::EmptyURI)?;
         self.check_create_open_data(open, &source, &uri)?
       }
     }
