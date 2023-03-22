@@ -1,5 +1,4 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mind_tree::node::NodeFilter;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -37,6 +36,26 @@ pub struct CommonArgs {
   pub interactive: bool,
 }
 
+/// Data-oriented arguments.
+#[derive(Args, Debug)]
+pub struct DataArgs {
+  /// Associate a file with the node.
+  #[arg(short, long)]
+  pub file: bool,
+
+  /// Associate a URI with the node.
+  #[arg(short, long)]
+  pub uri: Option<Option<String>>,
+
+  /// Open a node if it contains data.
+  ///
+  /// “Opening” is contextual: if the node is a file node, the file will be edited with your editor (either via the
+  /// $EDITOR environment variable, or via the edit.editor configuration path). If it’s a link node, a command used
+  /// to open URI will be used, depending on your operating system.
+  #[arg(short, long)]
+  pub open: bool,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
   /// Initialize a new Mind tree.
@@ -59,6 +78,9 @@ pub enum Command {
 
     #[arg(default_value_t, short, long, value_enum)]
     mode: InsertMode,
+
+    #[clap(flatten)]
+    data_args: DataArgs,
 
     /// Source node.
     #[arg(short, long)]
@@ -139,9 +161,13 @@ pub enum Command {
     #[command(flatten)]
     common_args: CommonArgs,
 
-    /// Data type to use for the node.
-    #[arg(id = "type", short, long, value_enum)]
-    ty: Option<DataType>,
+    /// Filter by file nodes.
+    #[arg(short, long)]
+    file: bool,
+
+    /// Filter by URI nodes.
+    #[arg(short, long)]
+    uri: bool,
 
     /// Select a base node to operate on.
     #[arg(short, long)]
@@ -179,21 +205,8 @@ pub enum Command {
     #[clap(flatten)]
     common_args: CommonArgs,
 
-    /// Associate a file with the node.
-    #[arg(short, long)]
-    file: bool,
-
-    /// Associate a URI with the node.
-    #[arg(short, long)]
-    uri: Option<Option<String>>,
-
-    /// Open a node if it contains data.
-    ///
-    /// “Opening” is contextual: if the node is a file node, the file will be edited with your editor (either via the
-    /// $EDITOR environment variable, or via the edit.editor configuration path). If it’s a link node, a command used
-    /// to open URI will be used, depending on your operating system.
-    #[arg(short, long)]
-    open: bool,
+    #[clap(flatten)]
+    data_args: DataArgs,
 
     /// Select a base node to operate on.
     #[arg(short, long)]
@@ -217,19 +230,4 @@ pub enum InsertMode {
 
   /// Insert the node as a sibling, just after the selected node (if the selected has a parent)
   After,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum DataType {
-  File,
-  Link,
-}
-
-impl DataType {
-  pub fn to_filter(self) -> NodeFilter {
-    match self {
-      DataType::File => NodeFilter::FileOnly,
-      DataType::Link => NodeFilter::LinkOnly,
-    }
-  }
 }
