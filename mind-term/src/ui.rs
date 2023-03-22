@@ -46,9 +46,16 @@ impl UI {
       .root()
       .write_paths("/", filter, &mut child_stdin)
       .ok()?; // FIXME: muted error?!
-    read_to_string(&mut child.stdout?)
-      .ok()
-      .map(|s| s.trim().to_owned()) // FIXME: muted error, do we really like that?
+    read_to_string(&mut child.stdout?).ok().and_then(|s| {
+      // FIXME: muted error, do we really like that?
+      let s = s.trim();
+
+      if s.is_empty() {
+        None
+      } else {
+        Some(s.to_owned())
+      }
+    })
   }
 
   pub fn input(&self, picker_opts: PickerOptions) -> Option<String> {

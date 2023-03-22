@@ -4,7 +4,7 @@ mod data_file;
 mod ui;
 
 use clap::Parser;
-use cli::{Cli, Command, CommonArgs, DataType, InsertMode};
+use cli::{Cli, Command, CommonArgs, DataArgs, InsertMode};
 use colored::Colorize;
 use config::Config;
 use data_file::{DataFileStore, DataFileStoreError};
@@ -142,9 +142,16 @@ impl App {
       Command::Insert {
         common_args,
         mode,
+        data_args,
         source,
         name,
-      } => self.run_insert_cmd(common_args, *mode, source.as_deref(), name.as_deref()),
+      } => self.run_insert_cmd(
+        common_args,
+        *mode,
+        data_args,
+        source.as_deref(),
+        name.as_deref(),
+      ),
 
       Command::Remove {
         common_args,
@@ -172,9 +179,10 @@ impl App {
 
       Command::Paths {
         common_args,
-        ty,
+        file,
+        uri,
         source,
-      } => self.run_paths_cmd(common_args, *ty, source.as_deref()),
+      } => self.run_paths_cmd(common_args, *file, *uri, source.as_deref()),
 
       Command::Get {
         common_args,
@@ -186,11 +194,9 @@ impl App {
 
       Command::Set {
         common_args,
-        file,
-        uri,
-        open,
+        data_args,
         source,
-      } => self.run_set_cmd(common_args, *file, uri.as_deref(), *open, source.as_deref()),
+      } => self.run_set_cmd(common_args, data_args, source.as_deref()),
     }
   }
 
@@ -291,6 +297,7 @@ impl App {
     &self,
     common_args: &CommonArgs,
     mode: InsertMode,
+    data_args: &DataArgs,
     source: Option<&str>,
     name: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
@@ -330,10 +337,14 @@ impl App {
 
     let node = Node::new(name.trim(), "");
     match mode {
-      InsertMode::InsideTop => source.insert_top(node),
-      InsertMode::InsideBottom => source.insert_bottom(node),
-      InsertMode::Before => source.insert_before(node)?,
-      InsertMode::After => source.insert_after(node)?,
+      InsertMode::InsideTop => source.insert_top(node.clone()),
+      InsertMode::InsideBottom => source.insert_bottom(node.clone()),
+      InsertMode::Before => source.insert_before(node.clone())?,
+      InsertMode::After => source.insert_after(node.clone())?,
+    }
+
+    if data_args.file || data_args.uri.is_some() {
+      self.check_create_open_data(common_args.interactive, data_args, &node)?;
     }
 
     self.persist(&tree)
@@ -503,11 +514,12 @@ impl App {
   fn run_paths_cmd(
     &self,
     common_args: &CommonArgs,
-    ty: Option<DataType>,
+    file: bool,
+    uri: bool,
     source: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
     let tree = self.get_tree(common_args)?;
-    let filter = ty.map(DataType::to_filter).unwrap_or_default();
+    let filter = NodeFilter::new(file, uri);
 
     let prefix = source
       .map(Cow::from)
@@ -563,9 +575,7 @@ impl App {
   fn run_set_cmd(
     &self,
     common_args: &CommonArgs,
-    file: bool,
-    uri: Option<&str>,
-    open: bool,
+    data_args: &DataArgs,
     source: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
     let tree = self.get_tree(common_args)?;
@@ -585,55 +595,54 @@ impl App {
       .and_then(|path| tree.get_node_by_path(path_iter(&path), self.config.tree.auto_create_nodes))
       .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    match (file, uri) {
-      (true, None) => self.check_create_open_data(open, &source, "")?,
-      (true, Some(_)) => return Err(PutainDeMerdeError::CannotSetURIAndfileData),
-      (false, None) => return Err(PutainDeMerdeError::NodeOperation(NodeError::NoData)),
-      (false, Some(uri)) => {
-        let uri = if uri.is_empty() {
-          self
-            .ui
-            .input(ui::PickerOptions::either(common_args.interactive, "URI: "))
-            .map(Cow::from)
-            .ok_or(PutainDeMerdeError::EmptyURI)?
-        } else {
-          Cow::from(uri)
-        };
-        self.check_create_open_data(open, &source, &uri)?
-      }
-    }
-
+    self.check_create_open_data(common_args.interactive, data_args, &source)?;
     self.persist(&tree)
   }
 
   /// Check whether we need to create and associate data, and eventually open the associated data.
   fn check_create_open_data(
     &self,
-    open: bool,
+    interactive: bool,
+    data_args: &DataArgs,
     node: &Node,
-    data: &str,
   ) -> Result<(), PutainDeMerdeError> {
     if let Some(NodeData::File(_)) = node.data() {
       return Err(PutainDeMerdeError::DataAlreadyExists);
     }
 
-    let data = if data.is_empty() {
-      // TODO: support automatically setting the content based on the name and a template thing
-      let path = self.data_file_store.create_data_file(
-        node.name(),
-        self.config.ui.extension.as_deref().unwrap_or(".md"),
-        "",
-      )?;
-      NodeData::file(path)
-    } else {
-      NodeData::link(data)
+    let data = match (data_args.file, data_args.uri.as_ref().map(|o| o.as_deref())) {
+      (true, None) => {
+        // TODO: support automatically setting the content based on the name and a template thing
+        let path = self.data_file_store.create_data_file(
+          node.name(),
+          self.config.ui.extension.as_deref().unwrap_or(".md"),
+          "",
+        )?;
+        NodeData::file(path)
+      }
+
+      (true, Some(_)) => return Err(PutainDeMerdeError::CannotSetURIAndfileData),
+      (false, None) => return Err(PutainDeMerdeError::NodeOperation(NodeError::NoData)),
+
+      (false, Some(uri)) => {
+        let uri = uri
+          .map(Cow::from)
+          .or_else(|| {
+            self
+              .ui
+              .input(ui::PickerOptions::either(interactive, "URI: "))
+              .map(Cow::from)
+          })
+          .ok_or(PutainDeMerdeError::EmptyURI)?;
+        NodeData::link(uri)
+      }
     };
 
     // move inside above
     node.set_data(data)?;
 
-    if open {
-      self.get_open_data(open, node)?;
+    if data_args.open {
+      self.get_open_data(data_args.open, node)?;
     }
 
     Ok(())
