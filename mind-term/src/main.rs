@@ -397,7 +397,7 @@ impl App {
           .ui
           .input(ui::PickerOptions::either(
             common_args.interactive,
-            "New node name:",
+            "New node name: ",
           ))
           .map(Cow::from)
       })
@@ -507,10 +507,9 @@ impl App {
     source: Option<&str>,
   ) -> Result<(), PutainDeMerdeError> {
     let tree = self.get_tree(common_args)?;
-    let prefix = source.unwrap_or("/");
     let filter = ty.map(DataType::to_filter).unwrap_or_default();
 
-    let source = source
+    let prefix = source
       .map(Cow::from)
       .or_else(|| {
         self
@@ -522,10 +521,12 @@ impl App {
           )
           .map(Cow::from)
       })
-      .and_then(|path| tree.get_node_by_path(path_iter(&path), self.config.tree.auto_create_nodes))
-      .unwrap_or_else(|| tree.root());
+      .unwrap_or("/".into());
+    let source = tree
+      .get_node_by_path(path_iter(&prefix), false)
+      .ok_or(PutainDeMerdeError::MissingBaseSelection)?;
 
-    source.write_paths(prefix, filter, &mut io::stdout())?;
+    source.write_paths(&prefix, filter, &mut io::stdout())?;
 
     self.persist(&tree)
   }
