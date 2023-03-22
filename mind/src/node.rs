@@ -593,6 +593,21 @@ mod tests {
     node::{Node, NodeData, NodeError, NodeFilter, Tree},
   };
 
+  use super::path_iter;
+
+  #[test]
+  fn path_iter_test() {
+    assert_eq!(path_iter("").collect::<Vec<_>>(), Vec::<&str>::new());
+    assert_eq!(path_iter("/").collect::<Vec<_>>(), Vec::<&str>::new());
+    assert_eq!(path_iter("//").collect::<Vec<_>>(), Vec::<&str>::new());
+    assert_eq!(
+      path_iter("/Foo/Bar/Zoo").collect::<Vec<_>>(),
+      vec!["Foo", "Bar", "Zoo"]
+    );
+
+    assert_eq!(path_iter("/A B").collect::<Vec<_>>(), vec!["A B"]);
+  }
+
   #[test]
   fn get_node_by_line_no_child() {
     let tree = Tree::from_encoding(encoding::Tree {
