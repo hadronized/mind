@@ -38,6 +38,14 @@ impl Forest {
     &self.tree
   }
 
+  /// Return all the trees with their corresponding CWD.
+  pub fn cwd_trees(&self) -> impl Iterator<Item = (&Path, &Tree)> {
+    self
+      .projects
+      .iter()
+      .map(|(cwd, tree)| (cwd.as_path(), tree))
+  }
+
   /// Get a CWD-based [`Tree`].
   pub fn cwd_tree(&self, cwd: impl AsRef<Path>) -> Option<&Tree> {
     self.projects.get(cwd.as_ref())

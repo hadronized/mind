@@ -197,6 +197,8 @@ impl App {
         data_args,
         source,
       } => self.run_set_cmd(common_args, data_args, source.as_deref()),
+
+      Command::List {} => self.run_ls_cmd(),
     }
   }
 
@@ -668,6 +670,63 @@ impl App {
           }
         }
       }
+    }
+
+    Ok(())
+  }
+
+  fn run_ls_cmd(&self) -> Result<(), PutainDeMerdeError> {
+    let cwd = current_dir().map_err(PutainDeMerdeError::NoCWD)?;
+
+    // check whether we have a forest
+    match self.load_forest() {
+      Ok(forest) => {
+        let main = forest.main_tree();
+        println!(
+          "{}: {}",
+          "✓ Main tree".bright_green(),
+          main.root().name().bold()
+        );
+
+        for (cwd, cwd_tree) in forest.cwd_trees() {
+          println!(
+            "  {}: {} ({})",
+            "✓ CWD tree".bright_green(),
+            cwd_tree.root().name().bold(),
+            cwd.display().to_string().italic()
+          );
+        }
+        if let Some(cwd_tree) = forest.cwd_tree(&cwd) {
+          println!(
+            "{}: {} ({})",
+            "✓ Current CWD tree".bright_green(),
+            cwd_tree.root().name().bold(),
+            cwd.display().to_string().italic()
+          );
+        } else {
+          println!("{}: {}", "✗ CWD tree".bright_red(), "none".dimmed());
+        }
+      }
+
+      Err(PutainDeMerdeError::NoForestPersisted) => {
+        println!(
+          "{} {}",
+          "✗ Main tree".bright_red(),
+          "none".dimmed().italic()
+        );
+      }
+
+      Err(e) => return Err(e),
+    }
+
+    if let Ok(local_tree) = Self::load_tree(Self::local_mind_path(cwd)) {
+      println!(
+        "{}: {}",
+        "✓ Local tree".bright_green(),
+        local_tree.root().name().bold()
+      );
+    } else {
+      println!("{}: {}", "✗ Local tree".bright_red(), "none".dimmed());
     }
 
     Ok(())

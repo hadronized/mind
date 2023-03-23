@@ -212,6 +212,10 @@ pub enum Command {
     #[arg(short, long)]
     source: Option<String>,
   },
+
+  /// List all the currently known trees.
+  #[command(name = "ls")]
+  List {},
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
