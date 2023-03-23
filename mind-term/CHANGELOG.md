@@ -7,6 +7,7 @@
 - Fix `mind paths` prefixing / auto create mode (we don’t auto create anymore here, it doesn’t make sense).
 - Fix path selection returning `/` when aborting with empty string.
 - Add `mind insert` shortcuts to create and open data at the same time.
+- Add `mind ls` to list every trees.
 
 # v0.1
 
