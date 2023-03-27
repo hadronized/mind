@@ -66,7 +66,7 @@ impl UI {
 
     let mut input = String::new();
     let _ = stdin().read_line(&mut input).ok()?;
-    Some(input)
+    Some(input.trim().to_owned())
   }
 
   /// Get the editor name.
