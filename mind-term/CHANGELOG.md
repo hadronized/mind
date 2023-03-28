@@ -1,5 +1,11 @@
 # v0.2
 
+## v0.2.2-dev
+
+> ???
+
+- Move `Config` out of this crate into `mind`, as it will be shared with the TUI as well.
+
 ## v0.2.1
 
 > Wed Mar 29 2023
