@@ -1,7 +1,9 @@
 //! User Interface types and functions
 
-use crate::config::Config;
-use mind_tree::node::{NodeFilter, Tree};
+use mind_tree::{
+  config::Config,
+  node::{NodeFilter, Tree},
+};
 use std::{
   io::{self, read_to_string, stdin, stdout, Write},
   path::Path,

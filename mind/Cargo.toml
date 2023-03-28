@@ -1,6 +1,6 @@
 [package]
 name = "mind-tree"
-version = "0.1.1"
+version = "0.1.2-dev"
 authors = ["Dimitri Sabadie <dimitri.sabadie@gmail.com>"]
 license = "BSD-3-Clause"
 description = "Organize your thoughts in a tree-like structure"
@@ -11,8 +11,10 @@ edition = "2021"
 rust-version = "1.66.0"
 
 [dependencies]
+dirs = "5.0.0"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1.0.38"
+toml = "0.7.3"
 
 [dev-dependencies]
 serde_json = "1.0.94"

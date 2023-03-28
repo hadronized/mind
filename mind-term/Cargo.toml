@@ -1,6 +1,6 @@
 [package]
 name = "mind-tree-term"
-version = "0.2.1"
+version = "0.2.2-dev"
 authors = ["Dimitri Sabadie <dimitri.sabadie@gmail.com>"]
 license = "BSD-3-Clause"
 description = "Organize your thoughts in a tree-like structure"
@@ -18,10 +18,8 @@ path = "src/main.rs"
 chrono = "0.4.23"
 clap = { version = "4.1.11", features = ["derive"] }
 colored = "2.0.0"
-dirs = "5"
-mind-tree = { path = "../mind", version = "0.1.1" }
+mind-tree = { path = "../mind", version = "0.1.2-dev" }
 open = "4.0.1"
 serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1"
 thiserror = "1.0.38"
-toml = "0.7.1"
