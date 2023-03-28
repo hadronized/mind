@@ -1,6 +1,8 @@
 # v0.2
 
-## v0.2.1-dev
+## v0.2.1
+
+> Wed Mar 29 2023
 
 - Fix for string-based inputs; they are now trimmed correctly.
 
