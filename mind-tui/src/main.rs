@@ -17,7 +17,13 @@ use std::{
 };
 use thiserror::Error;
 use tui::{
-  backend::CrosstermBackend, buffer::Buffer, layout::Rect, style::Style, widgets::Widget, Terminal,
+  backend::CrosstermBackend,
+  buffer::Buffer,
+  layout::Rect,
+  style::{Color, Modifier, Style},
+  text::Span,
+  widgets::Widget,
+  Terminal,
 };
 
 fn main() {
@@ -85,9 +91,6 @@ enum AppError {
 /// Event emitted in the TUI when something happens.
 #[derive(Clone, Debug)]
 pub enum Event {
-  /// A click was performed somewhere
-  Click,
-
   /// A key was pressed.
   KeyPressed(KeyCode),
 }
@@ -130,15 +133,15 @@ impl Indent {
   /// Compute the prefix string to display before a node.
   ///
   /// The `is_last` bool parameter must be set to true whenever the node is the last one in its parent’s children list.
-  fn to_indent_prefix(&self, is_last: bool) -> String {
+  fn to_indent_guides(&self, is_last: bool) -> String {
     if self.depth == 0 {
       return String::new();
     }
 
     let mut prefix = String::new();
 
-    for depth in 0..self.depth - 1 {
-      prefix.push(self.signs.get(depth).copied().unwrap_or(' '));
+    for sign in &self.signs[..self.signs.len() - 1] {
+      prefix.push(*sign);
       prefix.push(' ');
     }
 
@@ -193,13 +196,15 @@ pub struct TuiNode {
 
 impl TuiNode {
   pub fn new(
-    icon: impl Into<String>,
-    text: impl Into<String>,
+    icon: impl Into<Span<'static>>,
+    text: impl Into<Span<'static>>,
     children: impl Into<Vec<TuiNode>>,
   ) -> Self {
     let data = Rc::new(RefCell::new(TuiNodeData::new(icon, text, children)));
     Self { data }
   }
+
+  // TODO: check for x boundaries?
   /// Render the node in the given area with the given indent level, and its children.
   /// Abort before rendering outside of the area (Y axis).
   fn render_with_indent(
@@ -211,14 +216,28 @@ impl TuiNode {
   ) -> Option<Rect> {
     // render the current node
     let data = self.data.borrow();
-    let content = format!(
-      "{}{}{}",
-      indent.to_indent_prefix(is_last),
-      data.icon,
-      data.text
-    ); // FIXME: last=true
-    buf.set_string(area.x, area.y, content, Style::default()); // TODO: check for x boundaries?
 
+    // indent guides
+    let indent_guides = indent.to_indent_guides(is_last);
+    buf.set_string(
+      area.x,
+      area.y,
+      &indent_guides,
+      Style::default()
+        .fg(Color::Black)
+        .add_modifier(Modifier::DIM),
+    );
+
+    let mut render_x = indent_guides.chars().count() as u16;
+
+    // icon rendering
+    buf.set_string(render_x, area.y, &data.icon.content, data.icon.style);
+    render_x += data.icon.width() as u16;
+
+    // context rendering
+    buf.set_string(render_x, area.y, &data.text.content, data.text.style);
+
+    // traverse the children
     if data.children.is_empty() {
       return Some(area);
     }
@@ -256,15 +275,15 @@ impl TuiNode {
 
 #[derive(Debug)]
 pub struct TuiNodeData {
-  icon: String,
-  text: String,
+  icon: Span<'static>,
+  text: Span<'static>,
   children: Vec<TuiNode>,
 }
 
 impl TuiNodeData {
   fn new(
-    icon: impl Into<String>,
-    text: impl Into<String>,
+    icon: impl Into<Span<'static>>,
+    text: impl Into<Span<'static>>,
     children: impl Into<Vec<TuiNode>>,
   ) -> Self {
     Self {
@@ -282,14 +301,11 @@ struct Tui {
 }
 
 impl Tui {
-  const CLICK_TIMING: Duration = Duration::from_millis(100);
-
   pub fn new(event_sx: Sender<Event>, request_rx: Receiver<Request>) -> Result<Self, AppError> {
     enable_raw_mode().map_err(AppError::Init)?;
 
     let mut stdout = std::io::stdout();
-    execute!(&mut stdout, EnterAlternateScreen, EnableMouseCapture)
-      .map_err(AppError::TerminalAction)?;
+    execute!(&mut stdout, EnterAlternateScreen).map_err(AppError::TerminalAction)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout)).map_err(AppError::Init)?;
 
     terminal.hide_cursor().map_err(AppError::TerminalAction)?;
@@ -302,12 +318,20 @@ impl Tui {
   }
 
   pub fn run(mut self) -> Result<(), AppError> {
-    let mut left_button_down_at = None;
-
     // FIXME: we start with an empty tree named Tree; we need to support something smarter
     let tree = TuiTree::new(TuiNode::new(
-      " ",
-      "Tree",
+      Span::styled(
+        " ",
+        Style::default()
+          .add_modifier(Modifier::BOLD)
+          .fg(Color::Blue),
+      ),
+      Span::styled(
+        "Tree",
+        Style::default()
+          .add_modifier(Modifier::BOLD)
+          .fg(Color::Magenta),
+      ),
       [
         TuiNode::new(
           "",
@@ -321,16 +345,27 @@ impl Tui {
             ],
           )],
         ),
-        TuiNode::new("", "Second child", []),
-        TuiNode::new("", "Third child", []),
-        TuiNode::new("", "Fourth child", []),
+        TuiNode::new(
+          Span::styled(
+            "A ",
+            Style::default()
+              .add_modifier(Modifier::BOLD)
+              .fg(Color::Green),
+          ),
+          "Second child",
+          [],
+        ),
+        TuiNode::new("B ", "Third child", []),
+        TuiNode::new("C ", "Fourth child", []),
       ],
     ));
 
     loop {
-      // dequeue events
-      while let Ok(true) = crossterm::event::poll(Duration::from_millis(10)) {
-        // event available
+      // event available
+      let available_event = crossterm::event::poll(Duration::from_millis(50))
+        .map_err(|e| AppError::Event(e.to_string()))?;
+
+      if available_event {
         let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
         match event {
           crossterm::event::Event::Key(KeyEvent {
@@ -344,29 +379,6 @@ impl Tui {
               .map_err(|e| AppError::Event(e.to_string()))?;
           }
 
-          crossterm::event::Event::Mouse(MouseEvent { kind, .. }) => match kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-              left_button_down_at = Some(Instant::now());
-            }
-
-            MouseEventKind::Up(MouseButton::Left) => {
-              match left_button_down_at {
-                Some(when) if when.elapsed() <= Self::CLICK_TIMING => {
-                  self
-                    .event_sx
-                    .send(Event::Click)
-                    .map_err(|e| AppError::Event(e.to_string()))?;
-                }
-
-                _ => (),
-              }
-
-              left_button_down_at = None;
-            }
-
-            _ => (),
-          },
-
           _ => (),
         }
       }
@@ -378,6 +390,7 @@ impl Tui {
         }
       }
 
+      // render
       self
         .terminal
         .draw(|f| f.render_widget(&tree, f.size()))
@@ -392,12 +405,8 @@ impl Drop for Tui {
       .terminal
       .show_cursor()
       .map_err(AppError::TerminalAction);
-    let _ = execute!(
-      self.terminal.backend_mut(),
-      LeaveAlternateScreen,
-      DisableMouseCapture
-    )
-    .map_err(AppError::TerminalAction);
+    let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen,)
+      .map_err(AppError::TerminalAction);
     let _ = disable_raw_mode().map_err(AppError::Termination);
   }
 }
