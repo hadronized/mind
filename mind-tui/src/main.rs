@@ -17,8 +17,7 @@ use std::{
 };
 use thiserror::Error;
 use tui::{
-  backend::CrosstermBackend, buffer::Buffer, layout::Rect, style::Style, text::Span,
-  widgets::Widget, Frame, Terminal,
+  backend::CrosstermBackend, buffer::Buffer, layout::Rect, style::Style, widgets::Widget, Terminal,
 };
 
 fn main() {
@@ -100,39 +99,56 @@ pub enum Request {
   Quit,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Indent {
+  /// Current depth.
   depth: usize,
+
+  /// Signs to use at each iteration level.
+  signs: Vec<char>,
 }
 
 impl Indent {
   fn new() -> Self {
-    Self { depth: 0 }
-  }
-
-  fn deeper(self) -> Self {
     Self {
-      depth: self.depth + 1,
+      depth: 0,
+      signs: Vec::new(),
     }
   }
 
-  // FIXME: something is wrong when we are the last node and we still have some nodes later; this function is probably
-  // not the answer here
+  fn deeper(&self, is_last: bool) -> Self {
+    let sign = if is_last { ' ' } else { '│' };
+    let mut signs = self.signs.clone();
+    signs.push(sign);
+
+    Self {
+      depth: self.depth + 1,
+      signs,
+    }
+  }
+
   /// Compute the prefix string to display before a node.
   ///
   /// The `is_last` bool parameter must be set to true whenever the node is the last one in its parent’s children list.
-  fn to_indent_prefix(self, is_last: bool) -> String {
+  fn to_indent_prefix(&self, is_last: bool) -> String {
     if self.depth == 0 {
       return String::new();
     }
 
-    let prefix = "│ ".repeat(self.depth - 1);
+    let mut prefix = String::new();
+
+    for depth in 0..self.depth - 1 {
+      prefix.push(self.signs.get(depth).copied().unwrap_or(' '));
+      prefix.push(' ');
+    }
 
     if is_last {
-      prefix + "└ "
+      prefix.push_str("└ ");
     } else {
-      prefix + "│ "
+      prefix.push_str("│ ");
     }
+
+    prefix
   }
 }
 
@@ -165,7 +181,7 @@ impl<'a> Widget for &'a TuiTree {
   fn render(self, area: Rect, buf: &mut Buffer) {
     self
       .top_node
-      .render_with_indent(area, buf, self.top_indent, false);
+      .render_with_indent(area, buf, &self.top_indent, false);
   }
 }
 
@@ -190,7 +206,7 @@ impl TuiNode {
     &self,
     mut area: Rect,
     buf: &mut Buffer,
-    indent: Indent,
+    indent: &Indent,
     is_last: bool,
   ) -> Option<Rect> {
     // render the current node
@@ -208,7 +224,7 @@ impl TuiNode {
     }
 
     // then render all of its children, if any, as long as we are not going out of area
-    let indent = indent.deeper();
+    let new_indent = indent.deeper(false);
     for child in &data.children[..data.children.len() - 1] {
       area.y += 1;
 
@@ -218,7 +234,7 @@ impl TuiNode {
       }
 
       // abort if a child hit the bottom
-      area = child.render_with_indent(area, buf, indent, false)?;
+      area = child.render_with_indent(area, buf, &new_indent, false)?;
     }
 
     // the last child is to be treated specifically for the indent sign
@@ -230,7 +246,9 @@ impl TuiNode {
     }
 
     // abort if a child hit the bottom
-    area = data.children[data.children.len() - 1].render_with_indent(area, buf, indent, true)?;
+    let new_indent = indent.deeper(true);
+    area =
+      data.children[data.children.len() - 1].render_with_indent(area, buf, &new_indent, true)?;
 
     Some(area)
   }
