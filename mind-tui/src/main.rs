@@ -55,6 +55,10 @@ fn bootstrap() -> Result<(), AppError> {
         }
       }
 
+      Event::Command(cmd) if ["q", "quit"].contains(&cmd.as_str()) => {
+        request_sx.send(Request::Quit).unwrap()
+      }
+
       _ => (),
     }
   }
@@ -91,6 +95,9 @@ enum AppError {
 /// Event emitted in the TUI when something happens.
 #[derive(Clone, Debug)]
 pub enum Event {
+  /// A command was entereed.
+  Command(String),
+
   /// A key was pressed.
   KeyPressed(KeyCode),
 }
@@ -298,6 +305,7 @@ struct Tui {
   terminal: Terminal<CrosstermBackend<Stdout>>,
   event_sx: Sender<Event>,
   request_rx: Receiver<Request>,
+  state: TuiState,
 }
 
 impl Tui {
@@ -310,10 +318,13 @@ impl Tui {
 
     terminal.hide_cursor().map_err(AppError::TerminalAction)?;
 
+    let state = TuiState::default();
+
     Ok(Tui {
       terminal,
       event_sx,
       request_rx,
+      state,
     })
   }
 
@@ -373,10 +384,55 @@ impl Tui {
             kind: KeyEventKind::Press,
             ..
           }) => {
-            self
-              .event_sx
-              .send(Event::KeyPressed(code))
-              .map_err(|e| AppError::Event(e.to_string()))?;
+            match self.state.cmd_line.as_mut() {
+              // forward input to the command line
+              Some(cmd_line) => {
+                match code {
+                  KeyCode::Esc => {
+                    // disable  the command line
+                    self.state.cmd_line = None;
+                  }
+
+                  KeyCode::Enter => {
+                    // command line is complete
+                    self
+                      .event_sx
+                      .send(Event::Command(cmd_line.input.clone()))
+                      .map_err(|e| AppError::Event(e.to_string()))?;
+
+                    self.state.cmd_line = None;
+                  }
+
+                  KeyCode::Char(c) => {
+                    cmd_line.input.insert(cmd_line.cursor, c);
+                    cmd_line.cursor += 1;
+                  }
+
+                  KeyCode::Backspace if !cmd_line.input.is_empty() => {
+                    cmd_line.input.remove(cmd_line.cursor - 1);
+                    cmd_line.cursor -= 1;
+                  }
+
+                  KeyCode::Left => {
+                    cmd_line.cursor = cmd_line.cursor.max(1) - 1;
+                  }
+
+                  KeyCode::Right => {
+                    cmd_line.cursor = cmd_line.cursor.min(cmd_line.input.len() - 1) + 1;
+                  }
+
+                  _ => (),
+                }
+              }
+
+              // enter command line when we press ':'
+              None if code == KeyCode::Char(':') => {
+                self.state.cmd_line = Some(CmdLine::default());
+              }
+
+              // something else
+              _ => (),
+            }
           }
 
           _ => (),
@@ -393,7 +449,29 @@ impl Tui {
       // render
       self
         .terminal
-        .draw(|f| f.render_widget(&tree, f.size()))
+        .draw(|f| {
+          let size = f.size();
+          // render the tree
+          f.render_widget(&tree, size);
+
+          // render the command line, if any
+          if let Some(ref cmd_line) = self.state.cmd_line {
+            let y = size.height - 1;
+
+            // render the line
+            f.render_widget(
+              cmd_line,
+              Rect {
+                y,
+                height: 1,
+                ..size
+              },
+            );
+
+            // position the cursor
+            f.set_cursor(size.x + 1 + cmd_line.cursor as u16, y);
+          }
+        })
         .map_err(AppError::Render)?;
     }
   }
@@ -408,5 +486,23 @@ impl Drop for Tui {
     let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen,)
       .map_err(AppError::TerminalAction);
     let _ = disable_raw_mode().map_err(AppError::Termination);
+  }
+}
+
+#[derive(Debug, Default)]
+pub struct TuiState {
+  cmd_line: Option<CmdLine>,
+}
+
+#[derive(Debug, Default)]
+pub struct CmdLine {
+  input: String,
+  cursor: usize,
+}
+
+impl<'a> Widget for &'a CmdLine {
+  fn render(self, area: Rect, buf: &mut Buffer) {
+    buf.set_string(area.x, area.y, ":", Style::default().fg(Color::Magenta));
+    buf.set_string(area.x + 1, area.y, &self.input, Style::default());
   }
 }
