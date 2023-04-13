@@ -4,11 +4,12 @@ use crossterm::{
   terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::{
-  cell::RefCell,
   io::Stdout,
   process::exit,
-  rc::Rc,
-  sync::mpsc::{channel, Receiver, Sender},
+  sync::{
+    mpsc::{channel, Receiver, Sender},
+    Arc, Mutex,
+  },
   thread,
   time::Duration,
 };
@@ -91,8 +92,10 @@ pub enum Event {
 }
 
 /// Request sent to the TUI to make a change in it.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum Request {
+  /// Provide a new tree to display.
+  NewTree(TuiTree),
   /// Ask the TUI to quit.
   Quit,
 }
@@ -186,7 +189,7 @@ impl<'a> Widget for &'a TuiTree {
 /// A visual representation of a single node in the TUI.
 #[derive(Clone, Debug)]
 pub struct TuiNode {
-  data: Rc<RefCell<TuiNodeData>>,
+  data: Arc<Mutex<TuiNodeData>>,
 }
 
 impl TuiNode {
@@ -195,7 +198,7 @@ impl TuiNode {
     text: impl Into<Span<'static>>,
     children: impl Into<Vec<TuiNode>>,
   ) -> Self {
-    let data = Rc::new(RefCell::new(TuiNodeData::new(icon, text, children)));
+    let data = Arc::new(Mutex::new(TuiNodeData::new(icon, text, children)));
     Self { data }
   }
 
@@ -210,7 +213,7 @@ impl TuiNode {
     is_last: bool,
   ) -> Option<Rect> {
     // render the current node
-    let data = self.data.borrow();
+    let data = self.data.lock().unwrap();
 
     // indent guides
     let indent_guides = indent.to_indent_guides(is_last);
@@ -296,6 +299,7 @@ struct Tui {
 
   // components
   cmd_line: CmdLine,
+  tree: TuiTree,
 }
 
 impl Tui {
@@ -309,58 +313,18 @@ impl Tui {
     terminal.hide_cursor().map_err(AppError::TerminalAction)?;
 
     let cmd_line = CmdLine::new(event_sx.clone());
+    let tree = TuiTree::new(TuiNode::new("", "Mind", []));
 
     Ok(Tui {
       terminal,
       event_sx,
       request_rx,
       cmd_line,
+      tree,
     })
   }
 
   pub fn run(mut self) -> Result<(), AppError> {
-    // FIXME: we start with an empty tree named Tree; we need to support something smarter
-    let tree = TuiTree::new(TuiNode::new(
-      Span::styled(
-        " ",
-        Style::default()
-          .add_modifier(Modifier::BOLD)
-          .fg(Color::Blue),
-      ),
-      Span::styled(
-        "Tree",
-        Style::default()
-          .add_modifier(Modifier::BOLD)
-          .fg(Color::Magenta),
-      ),
-      [
-        TuiNode::new(
-          "",
-          "First child",
-          [TuiNode::new(
-            "",
-            "This should be indented",
-            [
-              TuiNode::new("", "Oh yeaaah", []),
-              TuiNode::new("", "C’est la mouche qui pète !", []),
-            ],
-          )],
-        ),
-        TuiNode::new(
-          Span::styled(
-            "A ",
-            Style::default()
-              .add_modifier(Modifier::BOLD)
-              .fg(Color::Green),
-          ),
-          "Second child",
-          [],
-        ),
-        TuiNode::new("B ", "Third child", []),
-        TuiNode::new("C ", "Fourth child", []),
-      ],
-    ));
-
     let mut needs_redraw = true;
     loop {
       // event available
@@ -380,6 +344,10 @@ impl Tui {
       // check for requests
       while let Ok(req) = self.request_rx.try_recv() {
         match req {
+          Request::NewTree(tree) => {
+            self.tree = tree;
+          }
+
           Request::Quit => return Ok(()),
         }
       }
@@ -391,7 +359,7 @@ impl Tui {
           .draw(|f| {
             let size = f.size();
             // render the tree
-            f.render_widget(&tree, size);
+            f.render_widget(&self.tree, size);
 
             // render the command line, if any
             if let Some(ref state) = self.cmd_line.state {
