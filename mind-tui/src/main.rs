@@ -6,6 +6,7 @@ use crossterm::{
 use std::{
   io::Stdout,
   process::exit,
+  str::FromStr,
   sync::{
     mpsc::{channel, Receiver, Sender},
     Arc, Mutex,
@@ -47,9 +48,7 @@ fn bootstrap() -> Result<(), AppError> {
   // main loop of our logic application
   while let Ok(event) = event_rx.recv() {
     match event {
-      Event::Command(cmd) if ["q", "quit"].contains(&cmd.as_str()) => {
-        request_sx.send(Request::Quit).unwrap()
-      }
+      Event::Command(UserCmd::Quit) => request_sx.send(Request::Quit).unwrap(),
 
       _ => (),
     }
@@ -82,13 +81,16 @@ pub enum AppError {
 
   #[error("rendering error: {0}")]
   Render(std::io::Error),
+
+  #[error("unknown command")]
+  UnknownCommand(String),
 }
 
 /// Event emitted in the TUI when something happens.
 #[derive(Clone, Debug)]
 pub enum Event {
   /// A command was entereed.
-  Command(String),
+  Command(UserCmd),
 }
 
 /// Request sent to the TUI to make a change in it.
@@ -96,8 +98,28 @@ pub enum Event {
 pub enum Request {
   /// Provide a new tree to display.
   NewTree(TuiTree),
+
   /// Ask the TUI to quit.
   Quit,
+}
+
+/// User commands.
+///
+/// Those commands can be sent by typing them in the command line, for now.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum UserCmd {
+  Quit,
+}
+
+impl FromStr for UserCmd {
+  type Err = AppError;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "q" | "quit" => Ok(UserCmd::Quit),
+      _ => Err(AppError::UnknownCommand(s.to_owned())),
+    }
+  }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -471,7 +493,7 @@ impl RawEventHandler for CmdLine {
               // command line is complete
               self
                 .event_sx
-                .send(Event::Command(state.as_str().to_owned()))
+                .send(Event::Command(state.as_str().parse()?))
                 .map_err(|e| AppError::Event(e.to_string()))?;
 
               self.state = None;
