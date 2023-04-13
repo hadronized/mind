@@ -3,16 +3,17 @@ use crossterm::{
   execute,
   terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use mind_tree::config::Config;
 use std::{
   io::Stdout,
   process::exit,
   str::FromStr,
   sync::{
-    mpsc::{channel, Receiver, Sender},
+    mpsc::{channel, Receiver, SendError, Sender},
     Arc, Mutex,
   },
   thread,
-  time::Duration,
+  time::{Duration, Instant},
 };
 use thiserror::Error;
 use tui::{
@@ -44,6 +45,16 @@ fn bootstrap() -> Result<(), AppError> {
       exit(1);
     }
   });
+
+  let (config, config_err) = Config::load_or_default();
+  if let Some(config_err) = config_err {
+    request_sx
+      .send(Request::sticky_msg(
+        format!("error while reading configuration: {}", config_err),
+        Duration::from_secs(5),
+      ))
+      .map_err(AppError::Request)?;
+  }
 
   // main loop of our logic application
   while let Ok(event) = event_rx.recv() {
@@ -79,10 +90,13 @@ pub enum AppError {
   #[error("TUI event error: {0}")]
   Event(String),
 
+  #[error("error while sending a request to the TUI: {0}")]
+  Request(SendError<Request>),
+
   #[error("rendering error: {0}")]
   Render(std::io::Error),
 
-  #[error("unknown command")]
+  #[error("unknown '{0}' command")]
   UnknownCommand(String),
 }
 
@@ -99,8 +113,23 @@ pub enum Request {
   /// Provide a new tree to display.
   NewTree(TuiTree),
 
+  /// Display a sticky message.
+  StickyMsg {
+    span: Span<'static>,
+    timeout: Duration,
+  },
+
   /// Ask the TUI to quit.
   Quit,
+}
+
+impl Request {
+  fn sticky_msg(span: impl Into<Span<'static>>, timeout: Duration) -> Self {
+    Self::StickyMsg {
+      span: span.into(),
+      timeout,
+    }
+  }
 }
 
 /// User commands.
@@ -322,6 +351,7 @@ struct Tui {
   // components
   cmd_line: CmdLine,
   tree: TuiTree,
+  sticky_msg: Option<StickyMsg>,
 }
 
 impl Tui {
@@ -336,6 +366,7 @@ impl Tui {
 
     let cmd_line = CmdLine::new(event_sx.clone());
     let tree = TuiTree::new(TuiNode::new("", "Mind", []));
+    let sticky_msg = None;
 
     Ok(Tui {
       terminal,
@@ -343,7 +374,19 @@ impl Tui {
       request_rx,
       cmd_line,
       tree,
+      sticky_msg,
     })
+  }
+
+  /// Allow errors to occur and display them in case of occurrence.
+  pub fn display_errors<T>(&mut self, a: Result<T, AppError>, f: impl FnOnce(T)) {
+    match a {
+      Ok(a) => f(a),
+      Err(err) => self.display_sticky(
+        Span::styled(err.to_string(), Style::default().fg(Color::Red)),
+        Duration::from_secs(5),
+      ),
+    }
   }
 
   pub fn run(mut self) -> Result<(), AppError> {
@@ -357,10 +400,12 @@ impl Tui {
         let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
         // TODO: for now we only have the command line as reactive object, so nothing specific to do with the
         // returned event if it’s unhandled
-        let event = self.cmd_line.react_raw(event)?;
-        if let HandledEvent::Handled { requires_redraw } = event {
-          needs_redraw |= requires_redraw;
-        }
+        let handled_event = self.cmd_line.react_raw(event);
+        self.display_errors(handled_event, |event| {
+          if let HandledEvent::Handled { requires_redraw } = event {
+            needs_redraw |= requires_redraw;
+          }
+        });
       }
 
       // check for requests
@@ -370,16 +415,24 @@ impl Tui {
             self.tree = tree;
           }
 
+          Request::StickyMsg { span, timeout } => {
+            self.display_sticky(span, timeout);
+          }
+
           Request::Quit => return Ok(()),
         }
       }
 
+      self.refresh();
+
       // render
+      needs_redraw = true;
       if needs_redraw {
         self
           .terminal
           .draw(|f| {
             let size = f.size();
+
             // render the tree
             f.render_widget(&self.tree, size);
 
@@ -400,11 +453,49 @@ impl Tui {
               // position the cursor
               f.set_cursor(size.x + 1 + state.cursor() as u16, y);
             }
+
+            // render any sticky message, if any
+            if let Some(ref sticky_msg) = self.sticky_msg {
+              let p = tui::widgets::Paragraph::new(sticky_msg.span.content.as_ref())
+                .style(sticky_msg.span.style)
+                .wrap(tui::widgets::Wrap { trim: false })
+                .alignment(tui::layout::Alignment::Right);
+              let width = size.width / 4;
+              let height = size.height / 2;
+              f.render_widget(
+                p,
+                Rect {
+                  x: size.x + 3 * width,
+                  y: size.y,
+                  width,
+                  height,
+                },
+              );
+            }
           })
           .map_err(AppError::Render)?;
         needs_redraw = false;
       }
     }
+  }
+
+  fn refresh(&mut self) {
+    // check whether we should remove sticky messages
+    if let Some(ref mut sticky_msg) = self.sticky_msg {
+      if sticky_msg.until < Instant::now() {
+        self.sticky_msg = None;
+      }
+    }
+  }
+
+  /// Display a message with a given style and stick it around.
+  ///
+  /// The message will stick around until its timeout time is reached. If a message was still there, it is replaced
+  /// with the new message.
+  fn display_sticky(&mut self, span: impl Into<Span<'static>>, timeout: Duration) {
+    self.sticky_msg = Instant::now()
+      .checked_add(timeout)
+      .map(move |until| StickyMsg::new(span, until));
   }
 }
 
@@ -417,6 +508,22 @@ impl Drop for Tui {
     let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen,)
       .map_err(AppError::TerminalAction);
     let _ = disable_raw_mode().map_err(AppError::Termination);
+  }
+}
+
+/// Messages that won’t go out of the UI unless a given timeout is reached.
+#[derive(Debug)]
+pub struct StickyMsg {
+  span: Span<'static>,
+  until: Instant,
+}
+
+impl StickyMsg {
+  fn new(span: impl Into<Span<'static>>, until: Instant) -> Self {
+    Self {
+      span: span.into(),
+      until,
+    }
   }
 }
 
@@ -491,12 +598,14 @@ impl RawEventHandler for CmdLine {
 
             KeyCode::Enter => {
               // command line is complete
+              let parsed = state.as_str().parse();
+              self.state = None;
+
               self
                 .event_sx
-                .send(Event::Command(state.as_str().parse()?))
+                .send(Event::Command(parsed?))
                 .map_err(|e| AppError::Event(e.to_string()))?;
 
-              self.state = None;
               return Ok(HandledEvent::handled());
             }
 
