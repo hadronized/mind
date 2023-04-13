@@ -361,6 +361,7 @@ impl Tui {
       ],
     ));
 
+    let mut needs_redraw = true;
     loop {
       // event available
       let available_event = crossterm::event::poll(Duration::from_millis(50))
@@ -370,7 +371,10 @@ impl Tui {
         let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
         // TODO: for now we only have the command line as reactive object, so nothing specific to do with the
         // returned event if it’s unhandled
-        let _ = self.cmd_line.react_raw(event)?;
+        let event = self.cmd_line.react_raw(event)?;
+        if let HandledEvent::Handled { requires_redraw } = event {
+          needs_redraw |= requires_redraw;
+        }
       }
 
       // check for requests
@@ -381,32 +385,35 @@ impl Tui {
       }
 
       // render
-      self
-        .terminal
-        .draw(|f| {
-          let size = f.size();
-          // render the tree
-          f.render_widget(&tree, size);
+      if needs_redraw {
+        self
+          .terminal
+          .draw(|f| {
+            let size = f.size();
+            // render the tree
+            f.render_widget(&tree, size);
 
-          // render the command line, if any
-          if let Some(ref state) = self.cmd_line.state {
-            let y = size.height - 1;
+            // render the command line, if any
+            if let Some(ref state) = self.cmd_line.state {
+              let y = size.height - 1;
 
-            // render the line
-            f.render_widget(
-              state,
-              Rect {
-                y,
-                height: 1,
-                ..size
-              },
-            );
+              // render the line
+              f.render_widget(
+                state,
+                Rect {
+                  y,
+                  height: 1,
+                  ..size
+                },
+              );
 
-            // position the cursor
-            f.set_cursor(size.x + 1 + state.cursor() as u16, y);
-          }
-        })
-        .map_err(AppError::Render)?;
+              // position the cursor
+              f.set_cursor(size.x + 1 + state.cursor() as u16, y);
+            }
+          })
+          .map_err(AppError::Render)?;
+        needs_redraw = false;
+      }
     }
   }
 }
