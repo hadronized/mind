@@ -72,7 +72,7 @@ fn bootstrap() -> Result<(), AppError> {
 }
 
 #[derive(Debug, Error)]
-enum AppError {
+pub enum AppError {
   #[error("initialization failed: {0}")]
   Init(std::io::Error),
 
@@ -305,7 +305,9 @@ struct Tui {
   terminal: Terminal<CrosstermBackend<Stdout>>,
   event_sx: Sender<Event>,
   request_rx: Receiver<Request>,
-  state: TuiState,
+
+  // components
+  cmd_line: CmdLine,
 }
 
 impl Tui {
@@ -318,13 +320,13 @@ impl Tui {
 
     terminal.hide_cursor().map_err(AppError::TerminalAction)?;
 
-    let state = TuiState::default();
+    let cmd_line = CmdLine::new(event_sx.clone());
 
     Ok(Tui {
       terminal,
       event_sx,
       request_rx,
-      state,
+      cmd_line,
     })
   }
 
@@ -378,65 +380,9 @@ impl Tui {
 
       if available_event {
         let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
-        match event {
-          crossterm::event::Event::Key(KeyEvent {
-            code,
-            kind: KeyEventKind::Press,
-            ..
-          }) => {
-            match self.state.cmd_line.as_mut() {
-              // forward input to the command line
-              Some(cmd_line) => {
-                match code {
-                  KeyCode::Esc => {
-                    // disable  the command line
-                    self.state.cmd_line = None;
-                  }
-
-                  KeyCode::Enter => {
-                    // command line is complete
-                    self
-                      .event_sx
-                      .send(Event::Command(cmd_line.input.clone()))
-                      .map_err(|e| AppError::Event(e.to_string()))?;
-
-                    self.state.cmd_line = None;
-                  }
-
-                  KeyCode::Char(c) => {
-                    cmd_line.input.insert(cmd_line.cursor, c);
-                    cmd_line.cursor += 1;
-                  }
-
-                  KeyCode::Backspace if !cmd_line.input.is_empty() => {
-                    cmd_line.input.remove(cmd_line.cursor - 1);
-                    cmd_line.cursor -= 1;
-                  }
-
-                  KeyCode::Left => {
-                    cmd_line.cursor = cmd_line.cursor.max(1) - 1;
-                  }
-
-                  KeyCode::Right => {
-                    cmd_line.cursor = cmd_line.cursor.min(cmd_line.input.len() - 1) + 1;
-                  }
-
-                  _ => (),
-                }
-              }
-
-              // enter command line when we press ':'
-              None if code == KeyCode::Char(':') => {
-                self.state.cmd_line = Some(CmdLine::default());
-              }
-
-              // something else
-              _ => (),
-            }
-          }
-
-          _ => (),
-        }
+        // TODO: for now we only have the command line as reactive object, so nothing specific to do with the
+        // returned event if it’s unhandled
+        let _ = self.cmd_line.react_raw(event)?;
       }
 
       // check for requests
@@ -455,12 +401,12 @@ impl Tui {
           f.render_widget(&tree, size);
 
           // render the command line, if any
-          if let Some(ref cmd_line) = self.state.cmd_line {
+          if let Some(ref state) = self.cmd_line.state {
             let y = size.height - 1;
 
             // render the line
             f.render_widget(
-              cmd_line,
+              state,
               Rect {
                 y,
                 height: 1,
@@ -469,7 +415,7 @@ impl Tui {
             );
 
             // position the cursor
-            f.set_cursor(size.x + 1 + cmd_line.cursor as u16, y);
+            f.set_cursor(size.x + 1 + state.cursor() as u16, y);
           }
         })
         .map_err(AppError::Render)?;
@@ -489,18 +435,142 @@ impl Drop for Tui {
   }
 }
 
-#[derive(Debug, Default)]
-pub struct TuiState {
-  cmd_line: Option<CmdLine>,
+/// TUI components will react to raw events.
+pub trait RawEventHandler {
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<Option<crossterm::event::Event>, AppError>;
+}
+
+#[derive(Debug)]
+pub struct CmdLine {
+  state: Option<CmdLineState>,
+  event_sx: Sender<Event>,
+}
+
+impl CmdLine {
+  fn new(event_sx: Sender<Event>) -> Self {
+    Self {
+      state: None,
+      event_sx,
+    }
+  }
+}
+
+impl RawEventHandler for CmdLine {
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<Option<crossterm::event::Event>, AppError> {
+    match self.state {
+      None => {
+        if let crossterm::event::Event::Key(KeyEvent {
+          code: KeyCode::Char(':'),
+          kind: KeyEventKind::Press,
+          ..
+        }) = event
+        {
+          self.state = Some(CmdLineState::default());
+          return Ok(None);
+        }
+      }
+
+      Some(ref mut state) => {
+        if let crossterm::event::Event::Key(KeyEvent {
+          code,
+          kind: KeyEventKind::Press,
+          ..
+        }) = event
+        {
+          match code {
+            KeyCode::Esc => {
+              // disable  the command line
+              self.state = None;
+              return Ok(None);
+            }
+
+            KeyCode::Enter => {
+              // command line is complete
+              self
+                .event_sx
+                .send(Event::Command(state.as_str().to_owned()))
+                .map_err(|e| AppError::Event(e.to_string()))?;
+
+              self.state = None;
+              return Ok(None);
+            }
+
+            KeyCode::Char(c) => {
+              state.push_char(c);
+              return Ok(None);
+            }
+
+            KeyCode::Backspace => {
+              state.pop_char();
+              return Ok(None);
+            }
+
+            KeyCode::Left => {
+              state.move_cursor_left();
+              return Ok(None);
+            }
+
+            KeyCode::Right => {
+              state.move_cursor_right();
+              return Ok(None);
+            }
+
+            _ => (),
+          }
+        }
+      }
+    }
+
+    Ok(Some(event))
+  }
 }
 
 #[derive(Debug, Default)]
-pub struct CmdLine {
+pub struct CmdLineState {
   input: String,
   cursor: usize,
 }
 
-impl<'a> Widget for &'a CmdLine {
+impl CmdLineState {
+  pub fn push_char(&mut self, c: char) {
+    self.input.insert(self.cursor, c);
+    self.cursor += 1;
+  }
+
+  pub fn pop_char(&mut self) -> Option<char> {
+    if self.input.is_empty() {
+      None
+    } else {
+      let char = self.input.remove(self.cursor - 1);
+      self.cursor -= 1;
+      Some(char)
+    }
+  }
+
+  pub fn move_cursor_left(&mut self) {
+    self.cursor = self.cursor.max(1) - 1;
+  }
+
+  pub fn move_cursor_right(&mut self) {
+    self.cursor = self.cursor.min(self.input.len() - 1) + 1;
+  }
+
+  pub fn cursor(&self) -> usize {
+    self.cursor
+  }
+
+  pub fn as_str(&self) -> &str {
+    self.input.as_str()
+  }
+}
+
+impl<'a> Widget for &'a CmdLineState {
   fn render(self, area: Rect, buf: &mut Buffer) {
     buf.set_string(area.x, area.y, ":", Style::default().fg(Color::Magenta));
     buf.set_string(area.x + 1, area.y, &self.input, Style::default());
