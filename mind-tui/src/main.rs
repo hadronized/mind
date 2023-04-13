@@ -1,8 +1,5 @@
 use crossterm::{
-  event::{
-    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, MouseButton,
-    MouseEvent, MouseEventKind,
-  },
+  event::{KeyCode, KeyEvent, KeyEventKind},
   execute,
   terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -13,7 +10,7 @@ use std::{
   rc::Rc,
   sync::mpsc::{channel, Receiver, Sender},
   thread,
-  time::{Duration, Instant},
+  time::Duration,
 };
 use thiserror::Error;
 use tui::{
@@ -49,12 +46,6 @@ fn bootstrap() -> Result<(), AppError> {
   // main loop of our logic application
   while let Ok(event) = event_rx.recv() {
     match event {
-      Event::KeyPressed(key) => {
-        if let KeyCode::Char('q') = key {
-          request_sx.send(Request::Quit).unwrap();
-        }
-      }
-
       Event::Command(cmd) if ["q", "quit"].contains(&cmd.as_str()) => {
         request_sx.send(Request::Quit).unwrap()
       }
@@ -97,9 +88,6 @@ pub enum AppError {
 pub enum Event {
   /// A command was entereed.
   Command(String),
-
-  /// A key was pressed.
-  KeyPressed(KeyCode),
 }
 
 /// Request sent to the TUI to make a change in it.
@@ -437,10 +425,27 @@ impl Drop for Tui {
 
 /// TUI components will react to raw events.
 pub trait RawEventHandler {
-  fn react_raw(
-    &mut self,
-    event: crossterm::event::Event,
-  ) -> Result<Option<crossterm::event::Event>, AppError>;
+  fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError>;
+}
+
+/// Handled events.
+///
+/// An event handler might completely consume an event (handled), or not (unhandled). In the case of a handled event,
+/// it’s possible to pass more information upwards, such as whether we should render again, etc.
+#[derive(Debug)]
+pub enum HandledEvent {
+  Unhandled(crossterm::event::Event),
+
+  Handled { requires_redraw: bool },
+}
+
+impl HandledEvent {
+  // Handled event that requires a redraw.
+  fn handled() -> Self {
+    Self::Handled {
+      requires_redraw: true,
+    }
+  }
 }
 
 #[derive(Debug)]
@@ -459,10 +464,7 @@ impl CmdLine {
 }
 
 impl RawEventHandler for CmdLine {
-  fn react_raw(
-    &mut self,
-    event: crossterm::event::Event,
-  ) -> Result<Option<crossterm::event::Event>, AppError> {
+  fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError> {
     match self.state {
       None => {
         if let crossterm::event::Event::Key(KeyEvent {
@@ -472,7 +474,7 @@ impl RawEventHandler for CmdLine {
         }) = event
         {
           self.state = Some(CmdLineState::default());
-          return Ok(None);
+          return Ok(HandledEvent::handled());
         }
       }
 
@@ -487,7 +489,7 @@ impl RawEventHandler for CmdLine {
             KeyCode::Esc => {
               // disable  the command line
               self.state = None;
-              return Ok(None);
+              return Ok(HandledEvent::handled());
             }
 
             KeyCode::Enter => {
@@ -498,27 +500,27 @@ impl RawEventHandler for CmdLine {
                 .map_err(|e| AppError::Event(e.to_string()))?;
 
               self.state = None;
-              return Ok(None);
+              return Ok(HandledEvent::handled());
             }
 
             KeyCode::Char(c) => {
               state.push_char(c);
-              return Ok(None);
+              return Ok(HandledEvent::handled());
             }
 
             KeyCode::Backspace => {
               state.pop_char();
-              return Ok(None);
+              return Ok(HandledEvent::handled());
             }
 
             KeyCode::Left => {
               state.move_cursor_left();
-              return Ok(None);
+              return Ok(HandledEvent::handled());
             }
 
             KeyCode::Right => {
               state.move_cursor_right();
-              return Ok(None);
+              return Ok(HandledEvent::handled());
             }
 
             _ => (),
@@ -527,7 +529,7 @@ impl RawEventHandler for CmdLine {
       }
     }
 
-    Ok(Some(event))
+    Ok(HandledEvent::Unhandled(event))
   }
 }
 
