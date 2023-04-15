@@ -7,7 +7,7 @@ use cli::{Cli, Command, CommonArgs, DataArgs, InsertMode};
 use colored::Colorize;
 use data_file::{DataFileStore, DataFileStoreError};
 use mind_tree::config::Config;
-use mind_tree::forest::Forest;
+use mind_tree::forest::{Forest, ForestError};
 use mind_tree::node::{path_iter, Node, NodeData, NodeError, NodeFilter};
 use mind_tree::{encoding, node::Tree};
 use std::borrow::Cow;
@@ -60,6 +60,27 @@ impl App {
     config
   }
 
+  fn load_forest(&self) -> Result<Forest, PutainDeMerdeError> {
+    Ok(Forest::from_path(
+      self
+        .config
+        .persistence
+        .forest_path()
+        .ok_or(PutainDeMerdeError::NoForestPath)?,
+    )?)
+  }
+
+  fn persist_forest(&self, forest: &Forest) -> Result<(), PutainDeMerdeError> {
+    forest.persist(
+      self
+        .config
+        .persistence
+        .forest_path()
+        .ok_or(PutainDeMerdeError::NoForestPath)?,
+    )?;
+    Ok(())
+  }
+
   fn load_tree(path: impl AsRef<Path>) -> Result<Tree, PutainDeMerdeError> {
     let path = path.as_ref();
 
@@ -73,21 +94,6 @@ impl App {
     Ok(Tree::from_encoding(tree))
   }
 
-  fn load_forest(&self) -> Result<Forest, PutainDeMerdeError> {
-    let path = self
-      .config
-      .persistence
-      .forest_path()
-      .ok_or(PutainDeMerdeError::NoForestPath)?;
-
-    if !path.exists() {
-      return Err(PutainDeMerdeError::NoForestPersisted);
-    }
-
-    let contents = fs::read_to_string(path).map_err(PutainDeMerdeError::CannotReadForest)?;
-    serde_json::from_str(&contents).map_err(PutainDeMerdeError::CannotDeserializeForest)
-  }
-
   fn persist_tree_to_path(tree: &Tree, path: impl AsRef<Path>) -> Result<(), PutainDeMerdeError> {
     let path = path.as_ref();
 
@@ -99,24 +105,6 @@ impl App {
     let serialized =
       serde_json::to_string(tree).map_err(PutainDeMerdeError::CannotSerializeTree)?;
     fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteTree)?;
-    Ok(())
-  }
-
-  fn persist_forest(&self, forest: &Forest) -> Result<(), PutainDeMerdeError> {
-    let path = self
-      .config
-      .persistence
-      .forest_path()
-      .ok_or(PutainDeMerdeError::NoForestPath)?;
-
-    // ensure all parent directories are created
-    if let Some(parent) = path.parent() {
-      fs::create_dir_all(parent).map_err(PutainDeMerdeError::CannotCreateDirectories)?;
-    }
-
-    let serialized =
-      serde_json::to_string(forest).map_err(PutainDeMerdeError::CannotSerializeForest)?;
-    fs::write(path, serialized).map_err(PutainDeMerdeError::CannotWriteForest)?;
     Ok(())
   }
 
@@ -214,18 +202,21 @@ impl App {
         if common_args.local {
           let path = Self::local_mind_path(&cwd);
           Self::load_tree(&path).map(|tree| AppTree::Specific { path, tree })
-        } else if common_args.cwd {
-          let forest = self.load_forest()?;
-          forest
-            .cwd_tree(cwd.clone())
-            .cloned()
-            .map(|tree| AppTree::Forest { forest, tree })
-            .ok_or_else(|| PutainDeMerdeError::NoCWDTree(cwd))
         } else {
-          self.load_forest().map(|forest| AppTree::Forest {
-            tree: forest.main_tree().clone(),
-            forest,
-          })
+          let forest = self.load_forest()?;
+
+          if common_args.cwd {
+            forest
+              .cwd_tree(cwd.clone())
+              .cloned()
+              .map(|tree| AppTree::Forest { forest, tree })
+              .ok_or_else(|| PutainDeMerdeError::NoCWDTree(cwd))
+          } else {
+            Ok(AppTree::Forest {
+              tree: forest.main_tree().clone(),
+              forest,
+            })
+          }
         }
       }
     }
@@ -235,7 +226,15 @@ impl App {
   fn persist(&self, tree: &AppTree) -> Result<(), PutainDeMerdeError> {
     match tree {
       AppTree::Specific { path, tree } => Self::persist_tree_to_path(tree, path),
-      AppTree::Forest { forest, .. } => self.persist_forest(forest),
+      AppTree::Forest { forest, .. } => {
+        let path = self
+          .config
+          .persistence
+          .forest_path()
+          .ok_or(PutainDeMerdeError::NoForestPath)?;
+        forest.persist(path)?;
+        Ok(())
+      }
     }
   }
 
@@ -284,7 +283,7 @@ impl App {
 
       // if this is the first time we create any tree, it’s logical we don’t have anything persisted yet; use
       // a default one
-      Err(PutainDeMerdeError::NoForestPersisted) => {
+      Err(PutainDeMerdeError::ForestError(ForestError::NotPersisted(..))) => {
         let forest = Forest::new(tree);
         self.persist_forest(&forest)
       }
@@ -707,7 +706,7 @@ impl App {
         }
       }
 
-      Err(PutainDeMerdeError::NoForestPersisted) => {
+      Err(PutainDeMerdeError::ForestError(ForestError::NotPersisted(..))) => {
         println!(
           "{} {}",
           "✗ Main tree".bright_red(),
@@ -753,26 +752,14 @@ pub enum PutainDeMerdeError {
   #[error("no forest path; are you running without a filesystem?")]
   NoForestPath,
 
-  #[error("no forest persisted yet")]
-  NoForestPersisted,
+  #[error("{0}")]
+  ForestError(#[from] ForestError),
 
   #[error("no tree persisted yet")]
   NoTreePersisted,
 
-  #[error("error while serializing forest: {0}")]
-  CannotSerializeForest(serde_json::Error),
-
-  #[error("error while deserializing forest: {0}")]
-  CannotDeserializeForest(serde_json::Error),
-
   #[error("error while creating directories on the filesystem: {0}")]
   CannotCreateDirectories(std::io::Error),
-
-  #[error("error while writing forest to the filesystem: {0}")]
-  CannotWriteForest(std::io::Error),
-
-  #[error("error while reading forest from the filesystem: {0}")]
-  CannotReadForest(std::io::Error),
 
   #[error("error while serializing specific tree from the filesystem: {0}")]
   CannotSerializeTree(serde_json::Error),
