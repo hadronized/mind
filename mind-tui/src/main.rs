@@ -3,7 +3,11 @@ use crossterm::{
   execute,
   terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use mind_tree::config::Config;
+use mind_tree::{
+  config::Config,
+  forest::{Forest, ForestError},
+  node::{Node, Tree},
+};
 use std::{
   io::Stdout,
   process::exit,
@@ -56,6 +60,22 @@ fn bootstrap() -> Result<(), AppError> {
       .map_err(AppError::Request)?;
   }
 
+  // TODO: read CLI arguments to determine which tree to show; we start with the main forest for now
+  let forest = Forest::from_path(
+    config
+      .persistence
+      .forest_path()
+      .ok_or(AppError::NoForestPath)?,
+  )?;
+
+  // transform the main tree into a TreeNode
+  let tui_main_tree = tree_to_tui(forest.main_tree());
+
+  // send the tree to the TUI
+  request_sx
+    .send(Request::NewTree(tui_main_tree))
+    .map_err(AppError::Request)?;
+
   // main loop of our logic application
   while let Ok(event) = event_rx.recv() {
     match event {
@@ -98,6 +118,12 @@ pub enum AppError {
 
   #[error("unknown '{0}' command")]
   UnknownCommand(String),
+
+  #[error("no forest path")]
+  NoForestPath,
+
+  #[error("forest error: {0}")]
+  ForestError(#[from] ForestError),
 }
 
 /// Event emitted in the TUI when something happens.
@@ -683,4 +709,53 @@ impl<'a> Widget for &'a CmdLineState {
     buf.set_string(area.x, area.y, ":", Style::default().fg(Color::Magenta));
     buf.set_string(area.x + 1, area.y, &self.input, Style::default());
   }
+}
+
+fn tree_to_tui(tree: &Tree) -> TuiTree {
+  TuiTree::new(root_node_to_tui(&tree.root()))
+}
+
+fn root_node_to_tui(node: &Node) -> TuiNode {
+  let icon = Span::styled(
+    node.icon(),
+    Style::default()
+      .fg(Color::Magenta)
+      .add_modifier(Modifier::BOLD),
+  );
+  let text = Span::styled(
+    node.name(),
+    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+  );
+  let children: Vec<_> = if true || node.is_expanded() {
+    node.children().into_iter().map(node_to_tui).collect()
+  } else {
+    Vec::new()
+  };
+
+  TuiNode::new(icon, text, children)
+}
+
+fn node_to_tui(node: &Node) -> TuiNode {
+  let icon = Span::styled(node.icon(), Style::default().fg(Color::Green));
+
+  let text_style = Style::default();
+  let text_style = if node.has_children() {
+    text_style.fg(Color::Blue)
+  } else {
+    text_style
+  };
+  let text_style = if node.data().is_some() {
+    text_style.add_modifier(Modifier::BOLD)
+  } else {
+    text_style
+  };
+  let text = Span::styled(node.name(), text_style);
+
+  let children: Vec<_> = if true || node.is_expanded() {
+    node.children().into_iter().map(node_to_tui).collect()
+  } else {
+    Vec::new()
+  };
+
+  TuiNode::new(icon, text, children)
 }
