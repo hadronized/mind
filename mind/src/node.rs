@@ -3,7 +3,7 @@
 use crate::encoding::{self, TreeType};
 use serde::{Deserialize, Serialize};
 use std::{
-  cell::RefCell,
+  cell::{Ref, RefCell},
   io::{self, Write},
   path::PathBuf,
   rc::{Rc, Weak},
@@ -296,6 +296,16 @@ impl Node {
     self.parent().and_then(|parent| self.get_index(&parent))
   }
 
+  pub fn children<'a>(&'a self) -> Children<'a> {
+    Children {
+      borrow: self.inner.borrow(),
+    }
+  }
+
+  pub fn has_children(&self) -> bool {
+    !self.inner.borrow().children.is_empty()
+  }
+
   pub fn name(&self) -> String {
     self.inner.borrow().name.to_owned()
   }
@@ -549,6 +559,18 @@ impl NodeFilter {
       NodeFilter::FileOnly => matches!(node.inner.borrow().data, Some(NodeData::File(..))),
       NodeFilter::LinkOnly => matches!(node.inner.borrow().data, Some(NodeData::Link(..))),
     }
+  }
+}
+
+/// An iterator on a node children.
+#[derive(Debug)]
+pub struct Children<'a> {
+  borrow: Ref<'a, NodeInner>,
+}
+
+impl<'a> Children<'a> {
+  pub fn into_iter(&'a self) -> impl Iterator<Item = &'_ Node> {
+    self.borrow.children.iter()
   }
 }
 
