@@ -326,7 +326,7 @@ impl Node {
   }
 
   pub fn set_icon(&self, icon: impl AsRef<str>) {
-    let icon = icon.as_ref().trim().to_owned();
+    let icon = icon.as_ref().trim_start().to_owned();
     self.inner.borrow_mut().icon = icon;
   }
 
