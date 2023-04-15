@@ -154,8 +154,8 @@ impl App {
       Command::Icon {
         common_args,
         source,
-        icon,
-      } => self.run_icon_cmd(common_args, source.as_deref(), icon.as_deref()),
+        text,
+      } => self.run_icon_cmd(common_args, source.as_deref(), text.as_deref()),
 
       Command::Move {
         common_args,
