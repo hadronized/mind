@@ -648,15 +648,15 @@ pub struct CmdLineState {
 impl CmdLineState {
   pub fn push_char(&mut self, c: char) {
     self.input.insert(self.cursor, c);
-    self.cursor += 1;
+    self.move_cursor_right();
   }
 
   pub fn pop_char(&mut self) -> Option<char> {
-    if self.input.is_empty() {
+    if self.input.is_empty() || self.cursor == 0 {
       None
     } else {
       let char = self.input.remove(self.cursor - 1);
-      self.cursor -= 1;
+      self.move_cursor_left();
       Some(char)
     }
   }
