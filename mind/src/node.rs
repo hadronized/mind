@@ -296,7 +296,7 @@ impl Node {
     self.parent().and_then(|parent| self.get_index(&parent))
   }
 
-  pub fn children<'a>(&'a self) -> Children<'a> {
+  pub fn children(&self) -> Children {
     Children {
       borrow: self.inner.borrow(),
     }
