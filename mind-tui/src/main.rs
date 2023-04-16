@@ -688,7 +688,7 @@ impl CmdLineState {
   }
 
   pub fn move_cursor_left(&mut self) {
-    self.cursor = self.cursor.max(1) - 1;
+    self.cursor = self.cursor.saturating_sub(1);
   }
 
   pub fn move_cursor_right(&mut self) {
