@@ -322,7 +322,7 @@ impl Node {
   }
 
   pub fn icon(&self) -> String {
-    self.inner.borrow().icon.to_owned()
+    format!("{} ", self.inner.borrow().icon)
   }
 
   pub fn set_icon(&self, icon: impl AsRef<str>) {
