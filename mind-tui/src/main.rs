@@ -309,7 +309,7 @@ impl TuiNode {
     buf.set_string(render_x, area.y, &data.icon.content, data.icon.style);
     render_x += data.icon.width() as u16;
 
-    // context rendering
+    // content rendering
     buf.set_string(render_x, area.y, &data.text.content, data.text.style);
 
     // traverse the children
