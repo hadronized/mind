@@ -42,8 +42,9 @@ fn bootstrap() -> Result<(), AppError> {
   let (request_sx, request_rx) = channel();
 
   // spawn a thread for the TUI; we can send requests to it and it sends events back to us
+  let event_sx_ = event_sx.clone();
   let tui_thread = thread::spawn(move || {
-    let tui = Tui::new(event_sx, request_rx).expect("TUI creation");
+    let tui = Tui::new(event_sx_, request_rx).expect("TUI creation");
     if let Err(err) = tui.run() {
       eprintln!("TUI exited with error: {}", err);
       exit(1);
@@ -69,7 +70,7 @@ fn bootstrap() -> Result<(), AppError> {
   )?;
 
   // transform the main tree into a TreeNode
-  let tui_main_tree = tree_to_tui(forest.main_tree());
+  let tui_main_tree = tree_to_tui(event_sx, forest.main_tree());
 
   // send the tree to the TUI
   request_sx
@@ -80,6 +81,13 @@ fn bootstrap() -> Result<(), AppError> {
   while let Ok(event) = event_rx.recv() {
     match event {
       Event::Command(UserCmd::Quit) => request_sx.send(Request::Quit).unwrap(),
+
+      Event::NodeSelected { id } => request_sx
+        .send(Request::info_msg(
+          format!("selected node {id}"),
+          Duration::from_secs(5),
+        ))
+        .unwrap(),
 
       _ => (),
     }
@@ -131,6 +139,9 @@ pub enum AppError {
 pub enum Event {
   /// A command was entereed.
   Command(UserCmd),
+
+  /// Node selected.
+  NodeSelected { id: usize },
 }
 
 /// Request sent to the TUI to make a change in it.
@@ -155,6 +166,11 @@ impl Request {
       span: span.into(),
       timeout,
     }
+  }
+
+  fn info_msg(msg: impl Into<String>, timeout: Duration) -> Self {
+    let span = Span::styled(msg.into(), Style::default().fg(Color::Blue));
+    Self::sticky_msg(span, timeout)
   }
 }
 
@@ -233,6 +249,8 @@ impl Indent {
 /// TUI version of a tree.
 #[derive(Debug)]
 pub struct TuiTree {
+  event_sx: Sender<Event>,
+
   /// Root node.
   root: TuiNode,
 
@@ -241,17 +259,34 @@ pub struct TuiTree {
 
   /// Indentation used at top-level.
   top_indent: Indent,
+
+  /// Currently selected node.
+  ///
+  /// We use a number so that we can synchronize with requests.
+  selected_node_id: usize,
 }
 
 impl TuiTree {
-  pub fn new(root: TuiNode) -> Self {
+  pub fn new(event_sx: Sender<Event>, root: TuiNode) -> Self {
     let top_node = root.clone();
 
     Self {
+      event_sx,
       root,
       top_node,
       top_indent: Indent::new(),
+      selected_node_id: 0,
     }
+  }
+
+  fn select_node_above(&mut self) {
+    self.selected_node_id = self.selected_node_id.saturating_sub(1);
+  }
+
+  // FIXME: how do we limit that function? should we let it overflow the number of nodes and always assume to use the
+  // last node?
+  fn select_node_below(&mut self) {
+    self.selected_node_id = self.selected_node_id.saturating_add(1);
   }
 }
 
@@ -260,6 +295,39 @@ impl<'a> Widget for &'a TuiTree {
     self
       .top_node
       .render_with_indent(area, buf, &self.top_indent, false);
+  }
+}
+
+impl RawEventHandler for TuiTree {
+  fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError> {
+    if let crossterm::event::Event::Key(KeyEvent { code, .. }) = event {
+      match code {
+        KeyCode::Char('t') => {
+          self.select_node_below();
+          self
+            .event_sx
+            .send(Event::NodeSelected {
+              id: self.selected_node_id,
+            })
+            .map_err(|e| AppError::Event(e.to_string()))?;
+          return Ok(HandledEvent::handled());
+        }
+
+        KeyCode::Char('s') => {
+          self.select_node_above();
+          self
+            .event_sx
+            .send(Event::NodeSelected {
+              id: self.selected_node_id,
+            })
+            .map_err(|e| AppError::Event(e.to_string()))?;
+          return Ok(HandledEvent::handled());
+        }
+        _ => (),
+      }
+    }
+
+    Ok(HandledEvent::Unhandled(event))
   }
 }
 
@@ -391,7 +459,7 @@ impl Tui {
     terminal.hide_cursor().map_err(AppError::TerminalAction)?;
 
     let cmd_line = CmdLine::new(event_sx.clone());
-    let tree = TuiTree::new(TuiNode::new("", "Mind", []));
+    let tree = TuiTree::new(event_sx.clone(), TuiNode::new("", "Mind", []));
     let sticky_msg = None;
 
     Ok(Tui {
@@ -424,9 +492,10 @@ impl Tui {
 
       if available_event {
         let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
-        // TODO: for now we only have the command line as reactive object, so nothing specific to do with the
-        // returned event if it’s unhandled
-        let handled_event = self.cmd_line.react_raw(event);
+        let handled_event = self
+          .cmd_line
+          .react_raw(event)
+          .and_then(|handled| handled.or_else(&mut self.tree));
         self.display_errors(handled_event, |event| {
           if let HandledEvent::Handled { requires_redraw } = event {
             needs_redraw |= requires_redraw;
@@ -576,6 +645,15 @@ impl HandledEvent {
       requires_redraw: true,
     }
   }
+
+  // If the event is still unhandled, pass it to the next handler.
+  fn or_else(self, handler: &mut impl RawEventHandler) -> Result<HandledEvent, AppError> {
+    if let HandledEvent::Unhandled(event) = self {
+      handler.react_raw(event)
+    } else {
+      Ok(self)
+    }
+  }
 }
 
 #[derive(Debug)]
@@ -706,13 +784,27 @@ impl CmdLineState {
 
 impl<'a> Widget for &'a CmdLineState {
   fn render(self, area: Rect, buf: &mut Buffer) {
-    buf.set_string(area.x, area.y, ":", Style::default().fg(Color::Magenta));
-    buf.set_string(area.x + 1, area.y, &self.input, Style::default());
+    buf.set_string(
+      area.x,
+      area.y,
+      ":",
+      Style::default()
+        .fg(Color::Black)
+        .add_modifier(Modifier::DIM),
+    );
+    buf.set_string(
+      area.x + 1,
+      area.y,
+      &self.input,
+      Style::default()
+        .fg(Color::Magenta)
+        .remove_modifier(Modifier::all()),
+    );
   }
 }
 
-fn tree_to_tui(tree: &Tree) -> TuiTree {
-  TuiTree::new(root_node_to_tui(&tree.root()))
+fn tree_to_tui(event_sx: Sender<Event>, tree: &Tree) -> TuiTree {
+  TuiTree::new(event_sx, root_node_to_tui(&tree.root()))
 }
 
 fn root_node_to_tui(node: &Node) -> TuiNode {
