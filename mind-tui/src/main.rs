@@ -38,6 +38,8 @@ fn main() {
 }
 
 fn bootstrap() -> Result<(), AppError> {
+  let (config, config_err) = Config::load_or_default();
+
   let (event_sx, event_rx) = channel();
   let (request_sx, request_rx) = channel();
 
@@ -51,7 +53,6 @@ fn bootstrap() -> Result<(), AppError> {
     }
   });
 
-  let (config, config_err) = Config::load_or_default();
   if let Some(config_err) = config_err {
     request_sx
       .send(Request::sticky_msg(
@@ -82,14 +83,30 @@ fn bootstrap() -> Result<(), AppError> {
     match event {
       Event::Command(UserCmd::Quit) => request_sx.send(Request::Quit).unwrap(),
 
-      Event::NodeSelected { id } => request_sx
-        .send(Request::info_msg(
-          format!("selected node {id}"),
-          Duration::from_secs(5),
-        ))
-        .unwrap(),
+      Event::NodeSelected { id } => {
+        // we want to display the name of that id
+        if let Some(node) = forest.main_tree().get_node_by_line(id) {
+          request_sx
+            .send(Request::info_msg(
+              format!("selected node {id} \"{}\"", node.name()),
+              Duration::from_secs(5),
+            ))
+            .unwrap();
+        } else {
+          request_sx
+            .send(Request::info_msg(
+              format!("node {id} doesn’t exist"),
+              Duration::from_secs(5),
+            ))
+            .unwrap();
+        }
+      }
 
-      _ => (),
+      Event::ToggleNode { id } => {
+        if let Some(node) = forest.main_tree().get_node_by_line(id) {
+          node.toggle_expand();
+        }
+      }
     }
   }
 
@@ -142,6 +159,9 @@ pub enum Event {
 
   /// Node selected.
   NodeSelected { id: usize },
+
+  /// Toggle node.
+  ToggleNode { id: usize },
 }
 
 /// Request sent to the TUI to make a change in it.
@@ -260,15 +280,17 @@ pub struct TuiTree {
   /// Indentation used at top-level.
   top_indent: Indent,
 
-  /// Currently selected node.
-  ///
-  /// We use a number so that we can synchronize with requests.
+  /// Currently selected node ID.
   selected_node_id: usize,
+
+  /// Node cursor.
+  node_cursor: TuiNodeCursor,
 }
 
 impl TuiTree {
   pub fn new(event_sx: Sender<Event>, root: TuiNode) -> Self {
     let top_node = root.clone();
+    let node_cursor = TuiNodeCursor::new(top_node.clone());
 
     Self {
       event_sx,
@@ -276,17 +298,35 @@ impl TuiTree {
       top_node,
       top_indent: Indent::new(),
       selected_node_id: 0,
+      node_cursor,
     }
   }
 
-  fn select_node_above(&mut self) {
-    self.selected_node_id = self.selected_node_id.saturating_sub(1);
+  fn select_prev_node(&mut self) {
+    if self.node_cursor.prev_sibling() || self.node_cursor.parent() {
+      self.selected_node_id -= 1;
+    }
   }
 
-  // FIXME: how do we limit that function? should we let it overflow the number of nodes and always assume to use the
-  // last node?
-  fn select_node_below(&mut self) {
-    self.selected_node_id = self.selected_node_id.saturating_add(1);
+  fn select_next_node(&mut self) {
+    if self.node_cursor.is_expanded() && self.node_cursor.first_child()
+      || self.node_cursor.next_sibling()
+    {
+      self.selected_node_id += 1;
+    } else {
+      // we can still try to go to the parent and sibling, but we want to clone first because those two operations
+      // are part of the same move transaction
+      let mut cursor = self.node_cursor.clone();
+      if cursor.parent() && cursor.next_sibling() {
+        self.node_cursor = cursor;
+        self.selected_node_id += 1;
+      }
+    }
+  }
+
+  fn toggle_is_expanded(&mut self) {
+    let mut data = self.node_cursor.node.data.lock().unwrap();
+    data.is_expanded = !data.is_expanded;
   }
 }
 
@@ -303,7 +343,7 @@ impl RawEventHandler for TuiTree {
     if let crossterm::event::Event::Key(KeyEvent { code, .. }) = event {
       match code {
         KeyCode::Char('t') => {
-          self.select_node_below();
+          self.select_next_node();
           self
             .event_sx
             .send(Event::NodeSelected {
@@ -314,7 +354,7 @@ impl RawEventHandler for TuiTree {
         }
 
         KeyCode::Char('s') => {
-          self.select_node_above();
+          self.select_prev_node();
           self
             .event_sx
             .send(Event::NodeSelected {
@@ -323,6 +363,18 @@ impl RawEventHandler for TuiTree {
             .map_err(|e| AppError::Event(e.to_string()))?;
           return Ok(HandledEvent::handled());
         }
+
+        KeyCode::Char(' ') => {
+          self.toggle_is_expanded();
+          self
+            .event_sx
+            .send(Event::ToggleNode {
+              id: self.selected_node_id,
+            })
+            .map_err(|e| AppError::Event(e.to_string()))?;
+          return Ok(HandledEvent::handled());
+        }
+
         _ => (),
       }
     }
@@ -341,10 +393,31 @@ impl TuiNode {
   pub fn new(
     icon: impl Into<Span<'static>>,
     text: impl Into<Span<'static>>,
+    is_expanded: bool,
     children: impl Into<Vec<TuiNode>>,
   ) -> Self {
-    let data = Arc::new(Mutex::new(TuiNodeData::new(icon, text, children)));
-    Self { data }
+    let children = children.into();
+    let children2 = children.clone();
+    let data = Arc::new(Mutex::new(TuiNodeData::new(
+      icon,
+      text,
+      is_expanded,
+      children,
+    )));
+    let node = Self { data };
+
+    // set parent
+    for child in &children2 {
+      child.data.lock().unwrap().set_parent(node.clone());
+    }
+
+    // siblings
+    for (a, b) in children2.iter().zip(children2.iter().skip(1)) {
+      a.data.lock().unwrap().set_next(b.clone());
+      b.data.lock().unwrap().set_prev(a.clone());
+    }
+
+    node
   }
 
   // TODO: check for x boundaries?
@@ -380,8 +453,8 @@ impl TuiNode {
     // content rendering
     buf.set_string(render_x, area.y, &data.text.content, data.text.style);
 
-    // traverse the children
-    if data.children.is_empty() {
+    // nothing else to do if we don’t have any children or they are collapsed
+    if data.children.is_empty() || !data.is_expanded {
       return Some(area);
     }
 
@@ -420,6 +493,10 @@ impl TuiNode {
 pub struct TuiNodeData {
   icon: Span<'static>,
   text: Span<'static>,
+  is_expanded: bool,
+  parent: Option<TuiNode>,
+  prev: Option<TuiNode>,
+  next: Option<TuiNode>,
   children: Vec<TuiNode>,
 }
 
@@ -427,12 +504,98 @@ impl TuiNodeData {
   fn new(
     icon: impl Into<Span<'static>>,
     text: impl Into<Span<'static>>,
+    is_expanded: bool,
     children: impl Into<Vec<TuiNode>>,
   ) -> Self {
     Self {
       icon: icon.into(),
       text: text.into(),
+      is_expanded,
+      parent: None,
+      prev: None,
+      next: None,
       children: children.into(),
+    }
+  }
+
+  fn set_parent(&mut self, parent: TuiNode) {
+    self.parent = Some(parent);
+  }
+
+  fn set_prev(&mut self, prev: TuiNode) {
+    self.prev = Some(prev);
+  }
+
+  fn set_next(&mut self, next: TuiNode) {
+    self.next = Some(next);
+  }
+}
+
+/// A node cursor to ease moving around.
+#[derive(Clone, Debug)]
+struct TuiNodeCursor {
+  node: TuiNode,
+}
+
+impl TuiNodeCursor {
+  fn new(node: TuiNode) -> Self {
+    Self { node }
+  }
+
+  /// Check whether the node is expanded.
+  fn is_expanded(&self) -> bool {
+    self.node.data.lock().unwrap().is_expanded
+  }
+
+  /// Go to parent.
+  ///
+  /// Return `false` if it has no parent.
+  fn parent(&mut self) -> bool {
+    let parent = self.node.data.lock().unwrap().parent.clone();
+    if let Some(parent) = parent {
+      self.node = parent;
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Go to previous sibling.
+  ///
+  /// Return `false` if it has no previous sibling.
+  fn prev_sibling(&mut self) -> bool {
+    let prev = self.node.data.lock().unwrap().prev.clone();
+    if let Some(prev) = prev {
+      self.node = prev;
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Go to next sibling.
+  ///
+  /// Return `false` if it has no nextious sibling.
+  fn next_sibling(&mut self) -> bool {
+    let next = self.node.data.lock().unwrap().next.clone();
+    if let Some(next) = next {
+      self.node = next;
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Go to the first child, if any.
+  ///
+  /// Return `false` if it has no child.
+  fn first_child(&mut self) -> bool {
+    let child = self.node.data.lock().unwrap().children.first().cloned();
+    if let Some(child) = child {
+      self.node = child;
+      true
+    } else {
+      false
     }
   }
 }
@@ -459,7 +622,7 @@ impl Tui {
     terminal.hide_cursor().map_err(AppError::TerminalAction)?;
 
     let cmd_line = CmdLine::new(event_sx.clone());
-    let tree = TuiTree::new(event_sx.clone(), TuiNode::new("", "Mind", []));
+    let tree = TuiTree::new(event_sx.clone(), TuiNode::new("", "Mind", false, []));
     let sticky_msg = None;
 
     Ok(Tui {
@@ -647,7 +810,7 @@ impl HandledEvent {
   }
 
   // If the event is still unhandled, pass it to the next handler.
-  fn or_else(self, handler: &mut impl RawEventHandler) -> Result<HandledEvent, AppError> {
+  fn or_else(self, handler: &mut impl RawEventHandler) -> Result<Self, AppError> {
     if let HandledEvent::Unhandled(event) = self {
       handler.react_raw(event)
     } else {
@@ -818,13 +981,9 @@ fn root_node_to_tui(node: &Node) -> TuiNode {
     node.name(),
     Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
   );
-  let children: Vec<_> = if true || node.is_expanded() {
-    node.children().into_iter().map(node_to_tui).collect()
-  } else {
-    Vec::new()
-  };
+  let children: Vec<_> = node.children().into_iter().map(node_to_tui).collect();
 
-  TuiNode::new(icon, text, children)
+  TuiNode::new(icon, text, node.is_expanded(), children)
 }
 
 fn node_to_tui(node: &Node) -> TuiNode {
@@ -842,12 +1001,7 @@ fn node_to_tui(node: &Node) -> TuiNode {
     text_style
   };
   let text = Span::styled(node.name(), text_style);
+  let children: Vec<_> = node.children().into_iter().map(node_to_tui).collect();
 
-  let children: Vec<_> = if true || node.is_expanded() {
-    node.children().into_iter().map(node_to_tui).collect()
-  } else {
-    Vec::new()
-  };
-
-  TuiNode::new(icon, text, children)
+  TuiNode::new(icon, text, node.is_expanded(), children)
 }
