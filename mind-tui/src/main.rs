@@ -303,7 +303,14 @@ impl TuiTree {
   }
 
   fn select_prev_node(&mut self) {
-    if self.node_cursor.prev_sibling() || self.node_cursor.parent() {
+    if self.node_cursor.prev_sibling() {
+      // ensure we go down the previous node
+      while self.node_cursor.is_expanded() && self.node_cursor.first_child() {
+        while self.node_cursor.next_sibling() {}
+      }
+
+      self.selected_node_id -= 1;
+    } else if self.node_cursor.parent() {
       self.selected_node_id -= 1;
     }
   }
@@ -314,12 +321,13 @@ impl TuiTree {
     {
       self.selected_node_id += 1;
     } else {
-      // we can still try to go to the parent and sibling, but we want to clone first because those two operations
-      // are part of the same move transaction
       let mut cursor = self.node_cursor.clone();
-      if cursor.parent() && cursor.next_sibling() {
-        self.node_cursor = cursor;
-        self.selected_node_id += 1;
+      while cursor.parent() {
+        if cursor.next_sibling() {
+          self.selected_node_id += 1;
+          self.node_cursor = cursor;
+          break;
+        }
       }
     }
   }
@@ -334,7 +342,7 @@ impl<'a> Widget for &'a TuiTree {
   fn render(self, area: Rect, buf: &mut Buffer) {
     self
       .top_node
-      .render_with_indent(area, buf, &self.top_indent, false);
+      .render_with_indent(area, buf, &self.top_indent, false, &self.node_cursor);
   }
 }
 
@@ -364,7 +372,7 @@ impl RawEventHandler for TuiTree {
           return Ok(HandledEvent::handled());
         }
 
-        KeyCode::Char(' ') => {
+        KeyCode::Tab => {
           self.toggle_is_expanded();
           self
             .event_sx
@@ -429,6 +437,7 @@ impl TuiNode {
     buf: &mut Buffer,
     indent: &Indent,
     is_last: bool,
+    cursor: &TuiNodeCursor,
   ) -> Option<Rect> {
     // render the current node
     let data = self.data.lock().unwrap();
@@ -453,6 +462,13 @@ impl TuiNode {
     // content rendering
     buf.set_string(render_x, area.y, &data.text.content, data.text.style);
 
+    if Arc::as_ptr(&self.data) == Arc::as_ptr(&cursor.node.data) {
+      buf.set_style(
+        Rect::new(0, area.y, area.width, 1),
+        Style::default().bg(Color::Black),
+      );
+    }
+
     // nothing else to do if we don’t have any children or they are collapsed
     if data.children.is_empty() || !data.is_expanded {
       return Some(area);
@@ -469,7 +485,7 @@ impl TuiNode {
       }
 
       // abort if a child hit the bottom
-      area = child.render_with_indent(area, buf, &new_indent, false)?;
+      area = child.render_with_indent(area, buf, &new_indent, false, cursor)?;
     }
 
     // the last child is to be treated specifically for the indent sign
@@ -482,8 +498,13 @@ impl TuiNode {
 
     // abort if a child hit the bottom
     let new_indent = indent.deeper(true);
-    area =
-      data.children[data.children.len() - 1].render_with_indent(area, buf, &new_indent, true)?;
+    area = data.children[data.children.len() - 1].render_with_indent(
+      area,
+      buf,
+      &new_indent,
+      true,
+      cursor,
+    )?;
 
     Some(area)
   }
