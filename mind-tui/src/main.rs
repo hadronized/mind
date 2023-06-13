@@ -83,23 +83,17 @@ fn bootstrap() -> Result<(), AppError> {
     match event {
       Event::Command(UserCmd::Quit) => request_sx.send(Request::Quit).unwrap(),
 
-      Event::NodeSelected { id } => {
-        // we want to display the name of that id
-        if let Some(node) = forest.main_tree().get_node_by_line(id) {
-          request_sx
-            .send(Request::info_msg(
-              format!("selected node {id} \"{}\"", node.name()),
-              Duration::from_secs(5),
-            ))
-            .unwrap();
-        } else {
-          request_sx
-            .send(Request::info_msg(
-              format!("node {id} doesn’t exist"),
-              Duration::from_secs(5),
-            ))
-            .unwrap();
-        }
+      Event::Command(UserCmd::Save) => {
+        forest.persist(
+          config
+            .persistence
+            .forest_path()
+            .ok_or(AppError::NoForestPath)?,
+        )?;
+
+        request_sx
+          .send(Request::info_msg("state saved", Duration::from_secs(5)))
+          .unwrap();
       }
 
       Event::ToggleNode { id } => {
@@ -107,6 +101,8 @@ fn bootstrap() -> Result<(), AppError> {
           node.toggle_expand();
         }
       }
+
+      _ => (),
     }
   }
 
@@ -200,6 +196,7 @@ impl Request {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum UserCmd {
   Quit,
+  Save,
 }
 
 impl FromStr for UserCmd {
@@ -208,6 +205,7 @@ impl FromStr for UserCmd {
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s {
       "q" | "quit" => Ok(UserCmd::Quit),
+      "w" | "write" => Ok(UserCmd::Save),
       _ => Err(AppError::UnknownCommand(s.to_owned())),
     }
   }
