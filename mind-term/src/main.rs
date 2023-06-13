@@ -540,7 +540,7 @@ impl App {
 
     source.write_paths(&prefix, filter, &mut io::stdout())?;
 
-    self.persist(&tree)
+    Ok(())
   }
 
   fn run_get_cmd(
