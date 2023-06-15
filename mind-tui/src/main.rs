@@ -301,32 +301,14 @@ impl TuiTree {
   }
 
   fn select_prev_node(&mut self) {
-    if self.node_cursor.prev_sibling() {
-      // ensure we go down the previous node
-      while self.node_cursor.is_expanded() && self.node_cursor.first_child() {
-        while self.node_cursor.next_sibling() {}
-      }
-
-      self.selected_node_id -= 1;
-    } else if self.node_cursor.parent() {
+    if self.node_cursor.visual_prev() {
       self.selected_node_id -= 1;
     }
   }
 
   fn select_next_node(&mut self) {
-    if self.node_cursor.is_expanded() && self.node_cursor.first_child()
-      || self.node_cursor.next_sibling()
-    {
+    if self.node_cursor.visual_next() {
       self.selected_node_id += 1;
-    } else {
-      let mut cursor = self.node_cursor.clone();
-      while cursor.parent() {
-        if cursor.next_sibling() {
-          self.selected_node_id += 1;
-          self.node_cursor = cursor;
-          break;
-        }
-      }
     }
   }
 
@@ -614,6 +596,41 @@ impl TuiNodeCursor {
       self.node = child;
       true
     } else {
+      false
+    }
+  }
+
+  /// Go to the “previous” node.
+  ///
+  /// The previous node is the visually preceding node. That function will respect expanded / collapsed nodes.
+  fn visual_prev(&mut self) -> bool {
+    if self.prev_sibling() {
+      // ensure we go down the previous node
+      while self.is_expanded() && self.first_child() {
+        while self.next_sibling() {}
+      }
+
+      true
+    } else {
+      self.parent()
+    }
+  }
+
+  /// Go to the “next” node.
+  ///
+  /// The next node is the visually succeeding node. That function will respect expanded / collapsed nodes.
+  fn visual_next(&mut self) -> bool {
+    if self.is_expanded() && self.first_child() || self.next_sibling() {
+      true
+    } else {
+      let mut cursor = self.clone();
+      while cursor.parent() {
+        if cursor.next_sibling() {
+          *self = cursor;
+          return true;
+        }
+      }
+
       false
     }
   }
