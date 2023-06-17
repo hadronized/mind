@@ -3,6 +3,7 @@ use crossterm::{
   execute,
   terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use log::Level;
 use mind_tree::{
   config::Config,
   forest::{Forest, ForestError},
@@ -19,6 +20,7 @@ use std::{
   thread,
   time::{Duration, Instant},
 };
+use stderrlog::StdErrLog;
 use thiserror::Error;
 use tui::{
   backend::CrosstermBackend,
@@ -38,15 +40,31 @@ fn main() {
 }
 
 fn bootstrap() -> Result<(), AppError> {
+  StdErrLog::new()
+    .module(module_path!())
+    .verbosity(Level::Trace)
+    .timestamp(stderrlog::Timestamp::Millisecond)
+    .init()?;
+
   let (config, config_err) = Config::load_or_default();
+
+  log::info!("initialized");
 
   let (event_sx, event_rx) = channel();
   let (request_sx, request_rx) = channel();
 
+  // TODO: read CLI arguments to determine which tree to show; we start with the main forest for now
+  let forest = Forest::from_path(
+    config
+      .persistence
+      .forest_path()
+      .ok_or(AppError::NoForestPath)?,
+  )?;
+  let main_tree = tree_to_tui(Rect::default(), event_sx.clone(), forest.main_tree());
+
   // spawn a thread for the TUI; we can send requests to it and it sends events back to us
-  let event_sx_ = event_sx.clone();
   let tui_thread = thread::spawn(move || {
-    let tui = Tui::new(event_sx_, request_rx).expect("TUI creation");
+    let tui = Tui::new(main_tree, event_sx, request_rx).expect("TUI creation");
     if let Err(err) = tui.run() {
       eprintln!("TUI exited with error: {}", err);
       exit(1);
@@ -61,22 +79,6 @@ fn bootstrap() -> Result<(), AppError> {
       ))
       .map_err(AppError::Request)?;
   }
-
-  // TODO: read CLI arguments to determine which tree to show; we start with the main forest for now
-  let forest = Forest::from_path(
-    config
-      .persistence
-      .forest_path()
-      .ok_or(AppError::NoForestPath)?,
-  )?;
-
-  // transform the main tree into a TreeNode
-  let tui_main_tree = tree_to_tui(event_sx, forest.main_tree());
-
-  // send the tree to the TUI
-  request_sx
-    .send(Request::NewTree(tui_main_tree))
-    .map_err(AppError::Request)?;
 
   // main loop of our logic application
   while let Ok(event) = event_rx.recv() {
@@ -116,6 +118,9 @@ fn bootstrap() -> Result<(), AppError> {
 
 #[derive(Debug, Error)]
 pub enum AppError {
+  #[error("cannot initialize logging: {0}")]
+  LoggerInit(#[from] log::SetLoggerError),
+
   #[error("initialization failed: {0}")]
   Init(std::io::Error),
 
@@ -211,7 +216,7 @@ impl FromStr for UserCmd {
   }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Indent {
   /// Current depth.
   depth: usize,
@@ -221,13 +226,6 @@ pub struct Indent {
 }
 
 impl Indent {
-  fn new() -> Self {
-    Self {
-      depth: 0,
-      signs: Vec::new(),
-    }
-  }
-
   fn deeper(&self, is_last: bool) -> Self {
     let sign = if is_last { ' ' } else { '│' };
     let mut signs = self.signs.clone();
@@ -267,48 +265,58 @@ impl Indent {
 /// TUI version of a tree.
 #[derive(Debug)]
 pub struct TuiTree {
+  rect: Rect,
+
   event_sx: Sender<Event>,
 
   /// Root node.
   root: TuiNode,
-
-  /// Top node; i.e. the node that is at the top of the view.
-  top_node: TuiNode,
-
-  /// Indentation used at top-level.
-  top_indent: Indent,
 
   /// Currently selected node ID.
   selected_node_id: usize,
 
   /// Node cursor.
   node_cursor: TuiNodeCursor,
+
+  /// Top-level shift.
+  top_shift: u16,
 }
 
 impl TuiTree {
-  pub fn new(event_sx: Sender<Event>, root: TuiNode) -> Self {
-    let top_node = root.clone();
-    let node_cursor = TuiNodeCursor::new(top_node.clone());
+  pub fn new(rect: Rect, event_sx: Sender<Event>, root: TuiNode) -> Self {
+    let node_cursor = TuiNodeCursor::new(root.clone());
 
     Self {
+      rect,
       event_sx,
       root,
-      top_node,
-      top_indent: Indent::new(),
       selected_node_id: 0,
       node_cursor,
+      top_shift: 0,
     }
   }
 
   fn select_prev_node(&mut self) {
     if self.node_cursor.visual_prev() {
       self.selected_node_id -= 1;
+      self.adjust_view();
     }
   }
 
   fn select_next_node(&mut self) {
     if self.node_cursor.visual_next() {
       self.selected_node_id += 1;
+      self.adjust_view();
+    }
+  }
+
+  fn adjust_view(&mut self) {
+    let y = self.selected_node_id as isize - self.top_shift as isize;
+
+    if y < 0 {
+      self.top_shift -= -y as u16;
+    } else if y >= self.rect.height as isize {
+      self.top_shift += 1 + y as u16 - self.rect.height;
     }
   }
 
@@ -320,9 +328,15 @@ impl TuiTree {
 
 impl<'a> Widget for &'a TuiTree {
   fn render(self, area: Rect, buf: &mut Buffer) {
-    self
-      .top_node
-      .render_with_indent(area, buf, &self.top_indent, false, &self.node_cursor);
+    self.root.render_with_indent(
+      self.top_shift,
+      0,
+      area,
+      buf,
+      &Indent::default(),
+      false,
+      &self.node_cursor,
+    );
   }
 }
 
@@ -413,51 +427,58 @@ impl TuiNode {
   /// Abort before rendering outside of the area (Y axis).
   fn render_with_indent(
     &self,
+    top_shift: u16,
+    mut id: u16,
     mut area: Rect,
     buf: &mut Buffer,
     indent: &Indent,
     is_last: bool,
     cursor: &TuiNodeCursor,
-  ) -> Option<Rect> {
+  ) -> Option<(Rect, u16)> {
     // render the current node
     let data = self.data.lock().unwrap();
 
-    // indent guides
-    let indent_guides = indent.to_indent_guides(is_last);
-    buf.set_string(
-      area.x,
-      area.y,
-      &indent_guides,
-      Style::default()
-        .fg(Color::Black)
-        .add_modifier(Modifier::DIM),
-    );
-
-    let mut render_x = indent_guides.chars().count() as u16;
-
-    // icon rendering
-    buf.set_string(render_x, area.y, &data.icon.content, data.icon.style);
-    render_x += data.icon.width() as u16;
-
-    // content rendering
-    buf.set_string(render_x, area.y, &data.text.content, data.text.style);
-
-    if Arc::as_ptr(&self.data) == Arc::as_ptr(&cursor.node.data) {
-      buf.set_style(
-        Rect::new(0, area.y, area.width, 1),
-        Style::default().bg(Color::Black),
+    if id >= top_shift {
+      // indent guides
+      let indent_guides = indent.to_indent_guides(is_last);
+      buf.set_string(
+        area.x,
+        area.y,
+        &indent_guides,
+        Style::default()
+          .fg(Color::Black)
+          .add_modifier(Modifier::DIM),
       );
+
+      let mut render_x = indent_guides.chars().count() as u16;
+
+      // icon rendering
+      buf.set_string(render_x, area.y, &data.icon.content, data.icon.style);
+      render_x += data.icon.width() as u16;
+
+      // content rendering
+      buf.set_string(render_x, area.y, &data.text.content, data.text.style);
+
+      if Arc::as_ptr(&self.data) == Arc::as_ptr(&cursor.node.data) {
+        buf.set_style(
+          Rect::new(0, area.y, area.width, 1),
+          Style::default().bg(Color::Black),
+        );
+      }
     }
 
     // nothing else to do if we don’t have any children or they are collapsed
     if data.children.is_empty() || !data.is_expanded {
-      return Some(area);
+      return Some((area, id));
     }
 
     // then render all of its children, if any, as long as we are not going out of area
     let new_indent = indent.deeper(false);
     for child in &data.children[..data.children.len() - 1] {
-      area.y += 1;
+      // BUG: I think the bug lies here
+      if id >= top_shift {
+        area.y += 1;
+      }
 
       // abort if we are at the bottom of the area
       if area.y >= area.height {
@@ -465,11 +486,17 @@ impl TuiNode {
       }
 
       // abort if a child hit the bottom
-      area = child.render_with_indent(area, buf, &new_indent, false, cursor)?;
+      let (new_area, new_id) =
+        child.render_with_indent(top_shift, id + 1, area, buf, &new_indent, false, cursor)?;
+
+      area = new_area;
+      id = new_id;
     }
 
-    // the last child is to be treated specifically for the indent sign
-    area.y += 1;
+    if id >= top_shift {
+      // the last child is to be treated specifically for the indent sign
+      area.y += 1;
+    }
 
     // abort if we are at the bottom of the area
     if area.y >= area.height {
@@ -478,7 +505,9 @@ impl TuiNode {
 
     // abort if a child hit the bottom
     let new_indent = indent.deeper(true);
-    area = data.children[data.children.len() - 1].render_with_indent(
+    let (new_area, new_id) = data.children[data.children.len() - 1].render_with_indent(
+      top_shift,
+      id + 1,
       area,
       buf,
       &new_indent,
@@ -486,7 +515,7 @@ impl TuiNode {
       cursor,
     )?;
 
-    Some(area)
+    Some((new_area, new_id))
   }
 }
 
@@ -648,7 +677,11 @@ struct Tui {
 }
 
 impl Tui {
-  pub fn new(event_sx: Sender<Event>, request_rx: Receiver<Request>) -> Result<Self, AppError> {
+  pub fn new(
+    mut tree: TuiTree,
+    event_sx: Sender<Event>,
+    request_rx: Receiver<Request>,
+  ) -> Result<Self, AppError> {
     enable_raw_mode().map_err(AppError::Init)?;
 
     let mut stdout = std::io::stdout();
@@ -657,8 +690,9 @@ impl Tui {
 
     terminal.hide_cursor().map_err(AppError::TerminalAction)?;
 
+    tree.rect = terminal.get_frame().size();
+
     let cmd_line = CmdLine::new(event_sx.clone());
-    let tree = TuiTree::new(event_sx.clone(), TuiNode::new("", "Mind", false, []));
     let sticky_msg = None;
 
     Ok(Tui {
@@ -1002,8 +1036,8 @@ impl<'a> Widget for &'a CmdLineState {
   }
 }
 
-fn tree_to_tui(event_sx: Sender<Event>, tree: &Tree) -> TuiTree {
-  TuiTree::new(event_sx, root_node_to_tui(&tree.root()))
+fn tree_to_tui(rect: Rect, event_sx: Sender<Event>, tree: &Tree) -> TuiTree {
+  TuiTree::new(rect, event_sx, root_node_to_tui(&tree.root()))
 }
 
 fn root_node_to_tui(node: &Node) -> TuiNode {
