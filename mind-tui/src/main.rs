@@ -805,11 +805,13 @@ impl Tui {
           .draw(|f| {
             let size = f.size();
 
-            // render the tree
-            f.render_widget(&self.tree, size);
+            // when the command line is active, this value contains -1 so that we do not overlap on the command line
+            let mut tree_height_bias = 0;
 
             // render the command line, if any
             if let Some(ref state) = self.cmd_line.state {
+              tree_height_bias = 1;
+
               let y = size.height - 1;
 
               // render the line
@@ -825,6 +827,15 @@ impl Tui {
               // position the cursor
               f.set_cursor(size.x + 1 + state.cursor() as u16, y);
             }
+
+            // render the tree
+            f.render_widget(
+              &self.tree,
+              Rect {
+                height: self.tree.rect.height - tree_height_bias,
+                ..self.tree.rect
+              },
+            );
 
             // render any sticky message, if any
             if let Some(ref sticky_msg) = self.sticky_msg {
@@ -1061,14 +1072,16 @@ impl CmdLineState {
 
 impl<'a> Widget for &'a CmdLineState {
   fn render(self, area: Rect, buf: &mut Buffer) {
-    buf.set_string(
-      area.x,
-      area.y,
-      ":",
-      Style::default()
-        .fg(Color::Black)
-        .add_modifier(Modifier::DIM),
-    );
+    // render the prefix grey with no text; green if the function is valid and red if not
+    let input_str = self.input.as_str();
+    let color = if input_str.is_empty() {
+      Color::Black
+    } else if input_str.parse::<UserCmd>().is_ok() {
+      Color::Green
+    } else {
+      Color::Red
+    };
+    buf.set_string(area.x, area.y, ":", Style::default().fg(color));
     buf.set_string(
       area.x + 1,
       area.y,
