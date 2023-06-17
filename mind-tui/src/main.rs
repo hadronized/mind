@@ -1,16 +1,20 @@
+use clap::Parser;
 use crossterm::{
   event::{KeyCode, KeyEvent, KeyEventKind},
   execute,
   terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use log::Level;
+use log::LevelFilter;
 use mind_tree::{
   config::Config,
   forest::{Forest, ForestError},
   node::{Node, Tree},
 };
+use simplelog::WriteLogger;
 use std::{
+  fs::File,
   io::Stdout,
+  path::PathBuf,
   process::exit,
   str::FromStr,
   sync::{
@@ -20,7 +24,6 @@ use std::{
   thread,
   time::{Duration, Instant},
 };
-use stderrlog::StdErrLog;
 use thiserror::Error;
 use tui::{
   backend::CrosstermBackend,
@@ -32,6 +35,28 @@ use tui::{
   Terminal,
 };
 
+#[derive(Parser)]
+pub struct Cli {
+  #[clap(long)]
+  log_file: Option<PathBuf>,
+
+  #[clap(short, long, action = clap::ArgAction::Count)]
+  verbose: u8,
+}
+
+impl Cli {
+  fn verbosity(&self) -> LevelFilter {
+    match self.verbose {
+      0 => LevelFilter::Off,
+      1 => LevelFilter::Error,
+      2 => LevelFilter::Warn,
+      3 => LevelFilter::Info,
+      4 => LevelFilter::Debug,
+      _ => LevelFilter::Trace,
+    }
+  }
+}
+
 fn main() {
   if let Err(err) = bootstrap() {
     eprintln!("{}", err);
@@ -40,15 +65,24 @@ fn main() {
 }
 
 fn bootstrap() -> Result<(), AppError> {
-  StdErrLog::new()
-    .module(module_path!())
-    .verbosity(Level::Trace)
-    .timestamp(stderrlog::Timestamp::Millisecond)
-    .init()?;
+  let cli = Cli::parse();
+
+  if let Some(ref log_file) = cli.log_file {
+    WriteLogger::init(
+      cli.verbosity(),
+      simplelog::ConfigBuilder::new()
+        .set_time_format_rfc3339()
+        .build(),
+      File::create(log_file).map_err(|err| AppError::LogFileError {
+        err,
+        path: log_file.to_owned(),
+      })?,
+    )?;
+
+    log::info!("logger initialized and writing at {}", log_file.display());
+  }
 
   let (config, config_err) = Config::load_or_default();
-
-  log::info!("initialized");
 
   let (event_sx, event_rx) = channel();
   let (request_sx, request_rx) = channel();
@@ -120,6 +154,9 @@ fn bootstrap() -> Result<(), AppError> {
 pub enum AppError {
   #[error("cannot initialize logging: {0}")]
   LoggerInit(#[from] log::SetLoggerError),
+
+  #[error("cannot open log file {path} in write mode: {err}")]
+  LogFileError { err: std::io::Error, path: PathBuf },
 
   #[error("initialization failed: {0}")]
   Init(std::io::Error),
