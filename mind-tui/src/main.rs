@@ -342,8 +342,14 @@ impl<'a> Widget for &'a TuiTree {
 
 impl RawEventHandler for TuiTree {
   fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError> {
-    if let crossterm::event::Event::Key(KeyEvent { code, .. }) = event {
-      match code {
+    match event {
+      crossterm::event::Event::Resize(width, height) => {
+        self.rect.width = width;
+        self.rect.height = height;
+        self.adjust_view();
+      }
+
+      crossterm::event::Event::Key(KeyEvent { code, .. }) => match code {
         KeyCode::Char('t') => {
           self.select_next_node();
           self
@@ -378,7 +384,8 @@ impl RawEventHandler for TuiTree {
         }
 
         _ => (),
-      }
+      },
+      _ => (),
     }
 
     Ok(HandledEvent::Unhandled(event))
