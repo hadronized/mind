@@ -1,5 +1,6 @@
 [workspace]
 members = [
   "mind",
-  "mind-term"
+  "mind-term",
+  "mind-tui",
 ]

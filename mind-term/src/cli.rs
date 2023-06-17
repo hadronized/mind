@@ -133,7 +133,7 @@ pub enum Command {
 
     /// New icon of the node.
     #[arg(short, long)]
-    icon: Option<String>,
+    text: Option<String>,
   },
 
   /// Move a node into another one.

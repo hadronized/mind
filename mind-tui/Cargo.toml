@@ -1,21 +1,24 @@
 [package]
-name = "mind-tree"
-version = "0.1.2-dev"
+name = "mind-tree-tui"
+version = "0.1.0"
 authors = ["Dimitri Sabadie <dimitri.sabadie@gmail.com>"]
 license = "BSD-3-Clause"
 description = "Organize your thoughts in a tree-like structure"
 homepage = "https://github.com/phaazon/mind"
 repository = "https://github.com/phaazon/mind"
-documentation = "https://docs.rs/mind-tree"
 edition = "2021"
 rust-version = "1.66.0"
 
-[dependencies]
-dirs = "5.0.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1.0.94"
-thiserror = "1.0.38"
-toml = "0.7.3"
+[[bin]]
+name = "mind-tui"
+path = "src/main.rs"
 
-[dev-dependencies]
-serde_json = "1.0.94"
+[dependencies]
+clap = { version = "4.3.4", features = ["derive"] }
+crossterm = "0.26.1"
+log = "0.4.19"
+mind-tree = { version = "0.1.2-dev", path = "../mind" }
+simplelog = "0.12.1"
+thiserror = "1.0.40"
+tui = "0.19.0"
+
