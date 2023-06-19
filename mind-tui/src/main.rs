@@ -378,7 +378,12 @@ impl<'a> Widget for &'a TuiTree {
 }
 
 impl RawEventHandler for TuiTree {
-  fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError> {
+  type Feedback = ();
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError> {
     match event {
       crossterm::event::Event::Resize(width, height) => {
         self.rect.width = width;
@@ -395,7 +400,7 @@ impl RawEventHandler for TuiTree {
               id: self.selected_node_id,
             })
             .map_err(|e| AppError::Event(e.to_string()))?;
-          return Ok(HandledEvent::handled());
+          return Ok((HandledEvent::handled(), ()));
         }
 
         KeyCode::Char('s') => {
@@ -406,7 +411,7 @@ impl RawEventHandler for TuiTree {
               id: self.selected_node_id,
             })
             .map_err(|e| AppError::Event(e.to_string()))?;
-          return Ok(HandledEvent::handled());
+          return Ok((HandledEvent::handled(), ()));
         }
 
         KeyCode::Tab => {
@@ -417,7 +422,7 @@ impl RawEventHandler for TuiTree {
               id: self.selected_node_id,
             })
             .map_err(|e| AppError::Event(e.to_string()))?;
-          return Ok(HandledEvent::handled());
+          return Ok((HandledEvent::handled(), ()));
         }
 
         _ => (),
@@ -425,7 +430,7 @@ impl RawEventHandler for TuiTree {
       _ => (),
     }
 
-    Ok(HandledEvent::Unhandled(event))
+    Ok((HandledEvent::Unhandled(event), ()))
   }
 }
 
@@ -718,6 +723,7 @@ struct Tui {
   cmd_line: CmdLine,
   tree: TuiTree,
   sticky_msg: Option<StickyMsg>,
+  input_prompt: Option<InputPrompt>,
 }
 
 impl Tui {
@@ -738,6 +744,7 @@ impl Tui {
 
     let cmd_line = CmdLine::new(event_sx.clone());
     let sticky_msg = None;
+    let input_prompt = None;
 
     Ok(Tui {
       terminal,
@@ -746,6 +753,7 @@ impl Tui {
       cmd_line,
       tree,
       sticky_msg,
+      input_prompt,
     })
   }
 
@@ -762,6 +770,7 @@ impl Tui {
 
   pub fn run(mut self) -> Result<(), AppError> {
     let mut needs_redraw = true;
+
     loop {
       // event available
       let available_event = crossterm::event::poll(Duration::from_millis(50))
@@ -769,10 +778,8 @@ impl Tui {
 
       if available_event {
         let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
-        let handled_event = self
-          .cmd_line
-          .react_raw(event)
-          .and_then(|handled| handled.or_else(&mut self.tree));
+        let handled_event = self.react_raw(event).map(|(handled, _)| handled);
+
         self.display_errors(handled_event, |event| {
           if let HandledEvent::Handled { requires_redraw } = event {
             needs_redraw |= requires_redraw;
@@ -800,66 +807,71 @@ impl Tui {
       // render
       needs_redraw = true;
       if needs_redraw {
-        self
-          .terminal
-          .draw(|f| {
-            let size = f.size();
-
-            // when the command line is active, this value contains -1 so that we do not overlap on the command line
-            let mut tree_height_bias = 0;
-
-            // render the command line, if any
-            if let Some(ref state) = self.cmd_line.state {
-              tree_height_bias = 1;
-
-              let y = size.height - 1;
-
-              // render the line
-              f.render_widget(
-                state,
-                Rect {
-                  y,
-                  height: 1,
-                  ..size
-                },
-              );
-
-              // position the cursor
-              f.set_cursor(size.x + 1 + state.cursor() as u16, y);
-            }
-
-            // render the tree
-            f.render_widget(
-              &self.tree,
-              Rect {
-                height: self.tree.rect.height - tree_height_bias,
-                ..self.tree.rect
-              },
-            );
-
-            // render any sticky message, if any
-            if let Some(ref sticky_msg) = self.sticky_msg {
-              let p = tui::widgets::Paragraph::new(sticky_msg.span.content.as_ref())
-                .style(sticky_msg.span.style)
-                .wrap(tui::widgets::Wrap { trim: false })
-                .alignment(tui::layout::Alignment::Right);
-              let width = size.width / 4;
-              let height = size.height / 2;
-              f.render_widget(
-                p,
-                Rect {
-                  x: size.x + 3 * width,
-                  y: size.y,
-                  width,
-                  height,
-                },
-              );
-            }
-          })
-          .map_err(AppError::Render)?;
+        self.render()?;
         needs_redraw = false;
       }
     }
+  }
+
+  fn render(&mut self) -> Result<(), AppError> {
+    self
+      .terminal
+      .draw(|f| {
+        let size = f.size();
+
+        // when the command line is active, this value contains -1 so that we do not overlap on the command line
+        let mut tree_height_bias = 0;
+
+        // render the command line, if any
+        if let Some(ref prompt) = self.cmd_line.input_prompt.prompt {
+          tree_height_bias = 1;
+
+          let y = size.height - 1;
+
+          // render the line
+          f.render_widget(
+            prompt,
+            Rect {
+              y,
+              height: 1,
+              ..size
+            },
+          );
+
+          // position the cursor
+          f.set_cursor(size.x + 1 + prompt.cursor() as u16, y);
+        }
+
+        // render the tree
+        f.render_widget(
+          &self.tree,
+          Rect {
+            height: self.tree.rect.height - tree_height_bias,
+            ..self.tree.rect
+          },
+        );
+
+        // render any sticky message, if any
+        if let Some(ref sticky_msg) = self.sticky_msg {
+          let p = tui::widgets::Paragraph::new(sticky_msg.span.content.as_ref())
+            .style(sticky_msg.span.style)
+            .wrap(tui::widgets::Wrap { trim: false })
+            .alignment(tui::layout::Alignment::Right);
+          let width = size.width / 4;
+          let height = size.height / 2;
+          f.render_widget(
+            p,
+            Rect {
+              x: size.x + 3 * width,
+              y: size.y,
+              width,
+              height,
+            },
+          );
+        }
+      })
+      .map(|_| ())
+      .map_err(AppError::Render)
   }
 
   fn refresh(&mut self) {
@@ -894,6 +906,22 @@ impl Drop for Tui {
   }
 }
 
+impl RawEventHandler for Tui {
+  type Feedback = ();
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError> {
+    let handled = self
+      .cmd_line
+      .react_raw(event)
+      .map(|(handled, _)| handled)?
+      .and_then(&mut self.tree)?;
+    Ok((handled, ()))
+  }
+}
+
 /// Messages that won’t go out of the UI unless a given timeout is reached.
 #[derive(Debug)]
 pub struct StickyMsg {
@@ -912,7 +940,13 @@ impl StickyMsg {
 
 /// TUI components will react to raw events.
 pub trait RawEventHandler {
-  fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError>;
+  /// Feedback value returned by child to their parent.
+  type Feedback;
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError>;
 }
 
 /// Handled events.
@@ -934,10 +968,12 @@ impl HandledEvent {
     }
   }
 
-  // If the event is still unhandled, pass it to the next handler.
-  fn or_else(self, handler: &mut impl RawEventHandler) -> Result<Self, AppError> {
+  fn and_then<T>(self, next_handler: &mut T) -> Result<HandledEvent, AppError>
+  where
+    T: RawEventHandler,
+  {
     if let HandledEvent::Unhandled(event) = self {
-      handler.react_raw(event)
+      next_handler.react_raw(event).map(|(evt, _)| evt)
     } else {
       Ok(self)
     }
@@ -946,98 +982,137 @@ impl HandledEvent {
 
 #[derive(Debug)]
 pub struct CmdLine {
-  state: Option<CmdLineState>,
+  input_prompt: UserInputPrompt,
   event_sx: Sender<Event>,
 }
 
 impl CmdLine {
   fn new(event_sx: Sender<Event>) -> Self {
     Self {
-      state: None,
+      input_prompt: UserInputPrompt::default(),
       event_sx,
     }
   }
 }
 
 impl RawEventHandler for CmdLine {
-  fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError> {
-    match self.state {
-      None => {
-        if let crossterm::event::Event::Key(KeyEvent {
-          code: KeyCode::Char(':'),
-          kind: KeyEventKind::Press,
-          ..
-        }) = event
-        {
-          self.state = Some(CmdLineState::default());
-          return Ok(HandledEvent::handled());
-        }
+  type Feedback = ();
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError> {
+    if self.input_prompt.is_visible() {
+      let (handled, input) = self.input_prompt.react_raw(event)?;
+
+      if let Some(input) = input {
+        // command line is complete
+        let usr_cmd = input.parse()?;
+
+        self
+          .event_sx
+          .send(Event::Command(usr_cmd))
+          .map_err(|e| AppError::Event(e.to_string()))?;
       }
 
-      Some(ref mut state) => {
-        if let crossterm::event::Event::Key(KeyEvent {
-          code,
-          kind: KeyEventKind::Press,
-          ..
-        }) = event
-        {
-          match code {
-            KeyCode::Esc => {
-              // disable  the command line
-              self.state = None;
-              return Ok(HandledEvent::handled());
-            }
+      return Ok((handled, ()));
+    } else if let crossterm::event::Event::Key(KeyEvent {
+      code: KeyCode::Char(':'),
+      kind: KeyEventKind::Press,
+      ..
+    }) = event
+    {
+      self.input_prompt.show();
+      return Ok((HandledEvent::handled(), ()));
+    }
 
-            KeyCode::Enter => {
-              // command line is complete
-              let parsed = state.as_str().parse();
-              self.state = None;
+    Ok((HandledEvent::Unhandled(event), ()))
+  }
+}
 
-              self
-                .event_sx
-                .send(Event::Command(parsed?))
-                .map_err(|e| AppError::Event(e.to_string()))?;
+/// Component displaying an input prompt to ask data from the user.
+#[derive(Debug, Default)]
+pub struct UserInputPrompt {
+  prompt: Option<InputPrompt>,
+}
 
-              return Ok(HandledEvent::handled());
-            }
+impl UserInputPrompt {
+  fn is_visible(&self) -> bool {
+    self.prompt.is_some()
+  }
 
-            KeyCode::Char(c) => {
-              state.push_char(c);
-              return Ok(HandledEvent::handled());
-            }
+  fn show(&mut self) {
+    self.prompt = Some(InputPrompt::default());
+  }
 
-            KeyCode::Backspace => {
-              state.pop_char();
-              return Ok(HandledEvent::handled());
-            }
+  fn hide(&mut self) {
+    self.prompt = None;
+  }
+}
 
-            KeyCode::Left => {
-              state.move_cursor_left();
-              return Ok(HandledEvent::handled());
-            }
+impl RawEventHandler for UserInputPrompt {
+  type Feedback = Option<String>;
 
-            KeyCode::Right => {
-              state.move_cursor_right();
-              return Ok(HandledEvent::handled());
-            }
-
-            _ => (),
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError> {
+    if let Some(ref mut input_prompt) = self.prompt {
+      if let crossterm::event::Event::Key(KeyEvent {
+        code,
+        kind: KeyEventKind::Press,
+        ..
+      }) = event
+      {
+        match code {
+          KeyCode::Esc => {
+            self.hide();
+            return Ok((HandledEvent::handled(), None));
           }
+
+          KeyCode::Enter => {
+            // command line is complete
+            let input = self.prompt.take().map(|prompt| prompt.as_str().to_owned());
+
+            return Ok((HandledEvent::handled(), input));
+          }
+
+          KeyCode::Char(c) => {
+            input_prompt.push_char(c);
+            return Ok((HandledEvent::handled(), None));
+          }
+
+          KeyCode::Backspace => {
+            input_prompt.pop_char();
+            return Ok((HandledEvent::handled(), None));
+          }
+
+          KeyCode::Left => {
+            input_prompt.move_cursor_left();
+            return Ok((HandledEvent::handled(), None));
+          }
+
+          KeyCode::Right => {
+            input_prompt.move_cursor_right();
+            return Ok((HandledEvent::handled(), None));
+          }
+
+          _ => (),
         }
       }
     }
 
-    Ok(HandledEvent::Unhandled(event))
+    Ok((HandledEvent::Unhandled(event), None))
   }
 }
 
 #[derive(Debug, Default)]
-pub struct CmdLineState {
+pub struct InputPrompt {
   input: String,
   cursor: usize,
 }
 
-impl CmdLineState {
+impl InputPrompt {
   pub fn push_char(&mut self, c: char) {
     self.input.insert(self.cursor, c);
     self.move_cursor_right();
@@ -1070,7 +1145,7 @@ impl CmdLineState {
   }
 }
 
-impl<'a> Widget for &'a CmdLineState {
+impl<'a> Widget for &'a InputPrompt {
   fn render(self, area: Rect, buf: &mut Buffer) {
     // render the prefix grey with no text; green if the function is valid and red if not
     let input_str = self.input.as_str();
