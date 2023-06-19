@@ -100,7 +100,7 @@ fn bootstrap() -> Result<(), AppError> {
   let tui_thread = thread::spawn(move || {
     let tui = Tui::new(main_tree, event_sx, request_rx).expect("TUI creation");
     if let Err(err) = tui.run() {
-      eprintln!("TUI exited with error: {}", err);
+      log::error!("TUI exited with error: {}", err);
       exit(1);
     }
   });
@@ -143,7 +143,7 @@ fn bootstrap() -> Result<(), AppError> {
   }
 
   if let Err(err) = tui_thread.join() {
-    eprintln!("TUI killed while waiting for it: {:?}", err);
+    log::error!("TUI killed while waiting for it: {:?}", err);
     exit(1);
   }
 
@@ -192,7 +192,7 @@ pub enum AppError {
 /// Event emitted in the TUI when something happens.
 #[derive(Clone, Debug)]
 pub enum Event {
-  /// A command was entereed.
+  /// A command was entered.
   Command(UserCmd),
 
   /// Node selected.
