@@ -138,6 +138,10 @@ fn bootstrap() -> Result<(), AppError> {
         }
       }
 
+      Event::InsertNode { mode } => {
+        log::info!("inserting node: {mode:?}");
+      }
+
       _ => (),
     }
   }
@@ -200,6 +204,25 @@ pub enum Event {
 
   /// Toggle node.
   ToggleNode { id: usize },
+
+  /// Node insertion at the current place.
+  InsertNode { mode: InsertMode },
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum InsertMode {
+  /// Insert the node inside the selected node, at the top.
+  InsideTop,
+
+  /// Insert the node inside the selected node, at the bottom.
+  #[default]
+  InsideBottom,
+
+  /// Insert the node as a sibling, just before the selected node (if the selected has a parent).
+  Before,
+
+  /// Insert the node as a sibling, just after the selected node (if the selected has a parent)
+  After,
 }
 
 /// Request sent to the TUI to make a change in it.
@@ -317,6 +340,9 @@ pub struct TuiTree {
 
   /// Top-level shift.
   top_shift: u16,
+
+  /// Prompt used to ask stuff from the user.
+  input_prompt: UserInputPrompt,
 }
 
 impl TuiTree {
@@ -330,6 +356,7 @@ impl TuiTree {
       selected_node_id: 0,
       node_cursor,
       top_shift: 0,
+      input_prompt: UserInputPrompt::default(),
     }
   }
 
@@ -374,6 +401,19 @@ impl<'a> Widget for &'a TuiTree {
       false,
       &self.node_cursor,
     );
+
+    if let Some(ref prompt) = self.input_prompt.prompt {
+      prompt.render(
+        Rect {
+          y: area.height - 1,
+          height: 1,
+          ..area
+        },
+        buf,
+      );
+
+      // TODO: position the cursor
+    }
   }
 }
 
@@ -384,6 +424,14 @@ impl RawEventHandler for TuiTree {
     &mut self,
     event: crossterm::event::Event,
   ) -> Result<(HandledEvent, Self::Feedback), AppError> {
+    if self.input_prompt.is_visible() {
+      if let (_, Some(input)) = self.input_prompt.react_raw(event)? {
+        log::info!("user typed: {input}");
+      }
+
+      return Ok((HandledEvent::handled(), ()));
+    }
+
     match event {
       crossterm::event::Event::Resize(width, height) => {
         self.rect.width = width;
@@ -412,6 +460,19 @@ impl RawEventHandler for TuiTree {
             })
             .map_err(|e| AppError::Event(e.to_string()))?;
           return Ok((HandledEvent::handled(), ()));
+        }
+
+        KeyCode::Char('o') => {
+          if !self.input_prompt.is_visible() {
+            self.input_prompt.show_with_title("insert after:");
+            self
+              .event_sx
+              .send(Event::InsertNode {
+                mode: InsertMode::After,
+              })
+              .map_err(|e| AppError::Event(e.to_string()))?;
+            return Ok((HandledEvent::handled(), ()));
+          }
         }
 
         KeyCode::Tab => {
@@ -716,14 +777,12 @@ impl TuiNodeCursor {
 
 struct Tui {
   terminal: Terminal<CrosstermBackend<Stdout>>,
-  event_sx: Sender<Event>,
   request_rx: Receiver<Request>,
 
   // components
   cmd_line: CmdLine,
   tree: TuiTree,
   sticky_msg: Option<StickyMsg>,
-  input_prompt: Option<InputPrompt>,
 }
 
 impl Tui {
@@ -742,18 +801,15 @@ impl Tui {
 
     tree.rect = terminal.get_frame().size();
 
-    let cmd_line = CmdLine::new(event_sx.clone());
+    let cmd_line = CmdLine::new(event_sx);
     let sticky_msg = None;
-    let input_prompt = None;
 
     Ok(Tui {
       terminal,
-      event_sx,
       request_rx,
       cmd_line,
       tree,
       sticky_msg,
-      input_prompt,
     })
   }
 
@@ -988,8 +1044,15 @@ pub struct CmdLine {
 
 impl CmdLine {
   fn new(event_sx: Sender<Event>) -> Self {
+    let input_prompt = UserInputPrompt::new_with_completions([
+      "q".to_owned(),
+      "quit".to_owned(),
+      "w".to_owned(),
+      "write".to_owned(),
+    ]);
+
     Self {
-      input_prompt: UserInputPrompt::default(),
+      input_prompt,
       event_sx,
     }
   }
@@ -1034,15 +1097,37 @@ impl RawEventHandler for CmdLine {
 #[derive(Debug, Default)]
 pub struct UserInputPrompt {
   prompt: Option<InputPrompt>,
+  completions: Vec<String>,
 }
 
 impl UserInputPrompt {
+  fn new_with_completions(completions: impl Into<Vec<String>>) -> Self {
+    Self {
+      prompt: None,
+      completions: completions.into(),
+    }
+  }
+
   fn is_visible(&self) -> bool {
     self.prompt.is_some()
   }
 
   fn show(&mut self) {
-    self.prompt = Some(InputPrompt::default());
+    let prompt = InputPrompt {
+      completions: self.completions.clone(),
+      ..InputPrompt::default()
+    };
+
+    self.prompt = Some(prompt);
+  }
+
+  fn show_with_title(&mut self, title: impl Into<String>) {
+    let prompt = InputPrompt {
+      completions: self.completions.clone(),
+      title: title.into(),
+      ..InputPrompt::default()
+    };
+    self.prompt = Some(prompt);
   }
 
   fn hide(&mut self) {
@@ -1106,19 +1191,32 @@ impl RawEventHandler for UserInputPrompt {
   }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InputPrompt {
   input: String,
   cursor: usize,
+  title: String,
+  completions: Vec<String>,
+}
+
+impl Default for InputPrompt {
+  fn default() -> Self {
+    Self {
+      input: String::default(),
+      cursor: 0,
+      title: ":".to_owned(),
+      completions: Vec::new(),
+    }
+  }
 }
 
 impl InputPrompt {
-  pub fn push_char(&mut self, c: char) {
+  fn push_char(&mut self, c: char) {
     self.input.insert(self.cursor, c);
     self.move_cursor_right();
   }
 
-  pub fn pop_char(&mut self) -> Option<char> {
+  fn pop_char(&mut self) -> Option<char> {
     if self.input.is_empty() || self.cursor == 0 {
       None
     } else {
@@ -1128,19 +1226,19 @@ impl InputPrompt {
     }
   }
 
-  pub fn move_cursor_left(&mut self) {
+  fn move_cursor_left(&mut self) {
     self.cursor = self.cursor.saturating_sub(1);
   }
 
-  pub fn move_cursor_right(&mut self) {
+  fn move_cursor_right(&mut self) {
     self.cursor = self.cursor.min(self.input.len() - 1) + 1;
   }
 
-  pub fn cursor(&self) -> usize {
+  fn cursor(&self) -> usize {
     self.cursor
   }
 
-  pub fn as_str(&self) -> &str {
+  fn as_str(&self) -> &str {
     self.input.as_str()
   }
 }
@@ -1149,16 +1247,17 @@ impl<'a> Widget for &'a InputPrompt {
   fn render(self, area: Rect, buf: &mut Buffer) {
     // render the prefix grey with no text; green if the function is valid and red if not
     let input_str = self.input.as_str();
-    let color = if input_str.is_empty() {
-      Color::Black
-    } else if input_str.parse::<UserCmd>().is_ok() {
+    let color = if self.completions.is_empty() {
+      Color::Blue
+    } else if self.completions.iter().any(|c| c == input_str) {
       Color::Green
     } else {
       Color::Red
     };
-    buf.set_string(area.x, area.y, ":", Style::default().fg(color));
+
+    buf.set_string(area.x, area.y, &self.title, Style::default().fg(color));
     buf.set_string(
-      area.x + 1,
+      area.x + self.title.len() as u16,
       area.y,
       &self.input,
       Style::default()
