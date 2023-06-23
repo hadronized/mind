@@ -360,6 +360,14 @@ impl TuiTree {
     }
   }
 
+  fn emit_event(&self, event: Event) -> Result<(), AppError> {
+    self
+      .event_sx
+      .send(event)
+      .map_err(|e| AppError::Event(e.to_string()))?;
+    Ok(())
+  }
+
   fn select_prev_node(&mut self) {
     if self.node_cursor.visual_prev() {
       self.selected_node_id -= 1;
@@ -442,47 +450,35 @@ impl RawEventHandler for TuiTree {
       crossterm::event::Event::Key(KeyEvent { code, .. }) => match code {
         KeyCode::Char('t') => {
           self.select_next_node();
-          self
-            .event_sx
-            .send(Event::NodeSelected {
-              id: self.selected_node_id,
-            })
-            .map_err(|e| AppError::Event(e.to_string()))?;
+          self.emit_event(Event::NodeSelected {
+            id: self.selected_node_id,
+          })?;
           return Ok((HandledEvent::handled(), ()));
         }
 
         KeyCode::Char('s') => {
           self.select_prev_node();
-          self
-            .event_sx
-            .send(Event::NodeSelected {
-              id: self.selected_node_id,
-            })
-            .map_err(|e| AppError::Event(e.to_string()))?;
+          self.emit_event(Event::NodeSelected {
+            id: self.selected_node_id,
+          })?;
           return Ok((HandledEvent::handled(), ()));
         }
 
         KeyCode::Char('o') => {
           if !self.input_prompt.is_visible() {
             self.input_prompt.show_with_title("insert after:");
-            self
-              .event_sx
-              .send(Event::InsertNode {
-                mode: InsertMode::After,
-              })
-              .map_err(|e| AppError::Event(e.to_string()))?;
+            self.emit_event(Event::InsertNode {
+              mode: InsertMode::After,
+            })?;
             return Ok((HandledEvent::handled(), ()));
           }
         }
 
         KeyCode::Tab => {
           self.toggle_is_expanded();
-          self
-            .event_sx
-            .send(Event::ToggleNode {
-              id: self.selected_node_id,
-            })
-            .map_err(|e| AppError::Event(e.to_string()))?;
+          self.emit_event(Event::ToggleNode {
+            id: self.selected_node_id,
+          })?;
           return Ok((HandledEvent::handled(), ()));
         }
 
