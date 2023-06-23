@@ -1207,8 +1207,13 @@ impl Default for InputPrompt {
 }
 
 impl InputPrompt {
+  fn to_byte_pos(&self, cursor: usize) -> usize {
+    self.input.chars().take(cursor).map(char::len_utf8).sum()
+  }
+
   fn push_char(&mut self, c: char) {
-    self.input.insert(self.cursor, c);
+    let index = self.to_byte_pos(self.cursor);
+    self.input.insert(index, c);
     self.move_cursor_right();
   }
 
@@ -1216,7 +1221,8 @@ impl InputPrompt {
     if self.input.is_empty() || self.cursor == 0 {
       None
     } else {
-      let char = self.input.remove(self.cursor - 1);
+      let index = self.to_byte_pos(self.cursor - 1);
+      let char = self.input.remove(index);
       self.move_cursor_left();
       Some(char)
     }
