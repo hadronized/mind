@@ -407,11 +407,6 @@ impl TuiTree {
     }
   }
 
-  fn toggle_expand(&mut self) {
-    self.cursor.toggle_expand();
-    log::info!("expanded: {}", self.cursor.is_expanded());
-  }
-
   fn open_prompt_insert_node(&mut self, title: &str, mode: InsertMode) {
     self.input_prompt.show_with_title(title);
     self.input_pending_event = Some(Event::InsertNode {
