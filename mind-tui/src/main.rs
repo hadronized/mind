@@ -565,6 +565,19 @@ fn render_with_indent(
 
     let mut render_x = indent_guides.chars().count() as u16;
 
+    // arrow (expanded / collapsed) for nodes with children
+    if node.has_children() {
+      let arrow = if node.is_expanded() { " " } else { " " };
+      let arrow = Span::styled(
+        arrow,
+        Style::default()
+          .fg(Color::Black)
+          .add_modifier(Modifier::DIM),
+      );
+      buf.set_string(render_x, area.y, &arrow.content, arrow.style);
+      render_x += arrow.width() as u16;
+    }
+
     // icon rendering
     let icon = Span::styled(node.icon(), Style::default().fg(Color::Green));
     buf.set_string(render_x, area.y, &icon.content, icon.style);

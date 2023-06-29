@@ -331,7 +331,13 @@ impl Node {
   }
 
   pub fn icon(&self) -> String {
-    format!("{} ", self.inner.read().unwrap().icon)
+    let icon = &self.inner.read().unwrap().icon;
+
+    if icon.is_empty() {
+      String::new()
+    } else {
+      format!("{} ", icon)
+    }
   }
 
   pub fn set_icon(&self, icon: impl AsRef<str>) {
