@@ -134,6 +134,8 @@ impl Node {
         icon,
         is_expanded,
         parent,
+        prev: None,
+        next: None,
         data: None,
         children: Vec::new(),
       })),
@@ -162,11 +164,17 @@ impl Node {
       parent,
     );
 
-    let children = node
+    let children: Vec<_> = node
       .children
       .into_iter()
       .map(|node| Self::from_encoding_rec(Some(current.downgrade()), node))
       .collect();
+
+    // set prev / next in children
+    for (a, b) in children.iter().zip(children.iter().skip(1)) {
+      a.inner.write().unwrap().next = Some(b.clone());
+      b.inner.write().unwrap().prev = Some(a.clone());
+    }
 
     let data = node
       .data
@@ -389,6 +397,14 @@ impl Node {
       .ok_or(NodeError::NoParent)
   }
 
+  pub fn prev(&self) -> Option<Node> {
+    self.inner.read().unwrap().prev.clone()
+  }
+
+  pub fn next(&self) -> Option<Node> {
+    self.inner.read().unwrap().next.clone()
+  }
+
   pub fn insert_top(&self, node: Node) {
     node.inner.write().unwrap().parent = Some(self.downgrade());
     self.inner.write().unwrap().children.insert(0, node);
@@ -513,6 +529,8 @@ pub struct NodeInner {
   icon: String,
   is_expanded: bool,
   parent: Option<WeakNode>,
+  prev: Option<Node>,
+  next: Option<Node>,
   data: Option<NodeData>,
   children: Vec<Node>,
 }
@@ -571,6 +589,110 @@ pub struct Children<'a> {
 impl<'a> Children<'a> {
   pub fn into_iter(&'a self) -> impl Iterator<Item = &'_ Node> {
     self.borrow.children.iter()
+  }
+}
+
+/// A node cursor to ease moving around.
+#[derive(Clone, Debug)]
+pub struct Cursor {
+  node: Node,
+}
+
+impl Cursor {
+  pub fn new(node: Node) -> Self {
+    Self { node }
+  }
+
+  /// Check whether the node is expanded.
+  pub fn is_expanded(&self) -> bool {
+    self.node.inner.read().unwrap().is_expanded
+  }
+
+  /// Go to parent.
+  ///
+  /// Return `false` if it has no parent.
+  pub fn parent(&mut self) -> bool {
+    let parent = self.node.inner.read().unwrap().parent.clone();
+    if let Some(parent) = parent.and_then(|n| n.upgrade()) {
+      self.node = parent;
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Go to previous sibling.
+  ///
+  /// Return `false` if it has no previous sibling.
+  pub fn prev_sibling(&mut self) -> bool {
+    let prev = self.node.inner.read().unwrap().prev.clone();
+    if let Some(prev) = prev {
+      self.node = prev;
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Go to next sibling.
+  ///
+  /// Return `false` if it has no nextious sibling.
+  pub fn next_sibling(&mut self) -> bool {
+    let next = self.node.inner.read().unwrap().next.clone();
+    if let Some(next) = next {
+      self.node = next;
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Go to the first child, if any.
+  ///
+  /// Return `false` if it has no child.
+  pub fn first_child(&mut self) -> bool {
+    let child = self.node.inner.read().unwrap().children.first().cloned();
+    if let Some(child) = child {
+      self.node = child;
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Go to the “previous” node.
+  ///
+  /// The previous node is the visually preceding node. That function will respect expanded / collapsed nodes.
+  pub fn visual_prev(&mut self) -> bool {
+    if self.prev_sibling() {
+      // ensure we go down the previous node
+      while self.is_expanded() && self.first_child() {
+        while self.next_sibling() {}
+      }
+
+      true
+    } else {
+      self.parent()
+    }
+  }
+
+  /// Go to the “next” node.
+  ///
+  /// The next node is the visually succeeding node. That function will respect expanded / collapsed nodes.
+  pub fn visual_next(&mut self) -> bool {
+    if self.is_expanded() && self.first_child() || self.next_sibling() {
+      true
+    } else {
+      let mut cursor = self.clone();
+      while cursor.parent() {
+        if cursor.next_sibling() {
+          *self = cursor;
+          return true;
+        }
+      }
+
+      false
+    }
   }
 }
 
