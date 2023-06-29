@@ -3,10 +3,9 @@
 use crate::encoding::{self, TreeType};
 use serde::{Deserialize, Serialize};
 use std::{
-  cell::{Ref, RefCell},
   io::{self, Write},
   path::PathBuf,
-  rc::{Rc, Weak},
+  sync::{Arc, RwLock, RwLockReadGuard, Weak},
 };
 use thiserror::Error;
 
@@ -85,7 +84,7 @@ impl Tree {
 /// Not supposed to be used as-is; convert to [`Node`] when needed.
 #[derive(Clone, Debug)]
 pub struct WeakNode {
-  inner: Weak<RefCell<NodeInner>>,
+  inner: Weak<RwLock<NodeInner>>,
 }
 
 impl WeakNode {
@@ -97,12 +96,12 @@ impl WeakNode {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(from = "encoding::Node", into = "encoding::Node")]
 pub struct Node {
-  inner: Rc<RefCell<NodeInner>>,
+  inner: Arc<RwLock<NodeInner>>,
 }
 
 impl PartialEq for Node {
   fn eq(&self, other: &Self) -> bool {
-    self.inner.as_ptr().eq(&other.inner.as_ptr())
+    Arc::as_ptr(&self.inner).eq(&Arc::as_ptr(&other.inner))
   }
 }
 
@@ -130,7 +129,7 @@ impl Node {
     let icon = icon.trim_start().to_owned();
 
     Self {
-      inner: Rc::new(RefCell::new(NodeInner {
+      inner: Arc::new(RwLock::new(NodeInner {
         name,
         icon,
         is_expanded,
@@ -143,7 +142,7 @@ impl Node {
 
   fn downgrade(&self) -> WeakNode {
     WeakNode {
-      inner: Rc::downgrade(&self.inner),
+      inner: Arc::downgrade(&self.inner),
     }
   }
 
@@ -175,7 +174,7 @@ impl Node {
       .or_else(move || node.url.map(NodeData::link));
 
     {
-      let mut inner = current.inner.borrow_mut();
+      let mut inner = current.inner.write().unwrap();
       inner.children = children;
       inner.data = data;
     }
@@ -184,7 +183,7 @@ impl Node {
   }
 
   pub fn into_encoding(&self) -> encoding::Node {
-    let node = self.inner.borrow();
+    let node = self.inner.read().unwrap();
     let data;
     let url;
 
@@ -218,7 +217,7 @@ impl Node {
   }
 
   fn get_node_by_line(&self, mut line: usize) -> (usize, Option<Self>) {
-    let node = self.inner.borrow();
+    let node = self.inner.read().unwrap();
 
     if line == 0 {
       return (0, Some(self.clone()));
@@ -248,7 +247,7 @@ impl Node {
     mut path: impl Iterator<Item = &'a str>,
     auto_create_nodes: bool,
   ) -> Option<Self> {
-    let node = self.inner.borrow();
+    let node = self.inner.read().unwrap();
 
     match path.next() {
       None => Some(self.clone()),
@@ -259,7 +258,7 @@ impl Node {
         match node
           .children
           .iter()
-          .find(|node| node.inner.borrow().name == node_name)
+          .find(|node| node.inner.read().unwrap().name == node_name)
         {
           Some(child) => child.get_node_by_path(path, auto_create_nodes),
           None => {
@@ -282,7 +281,7 @@ impl Node {
   ///
   /// If we don’t have any parent, returns `None`.
   fn get_index(&self, parent: &Node) -> Result<usize, NodeError> {
-    for (i, child) in parent.inner.borrow().children.iter().enumerate() {
+    for (i, child) in parent.inner.read().unwrap().children.iter().enumerate() {
       if self == child {
         return Ok(i);
       }
@@ -298,16 +297,16 @@ impl Node {
 
   pub fn children(&self) -> Children {
     Children {
-      borrow: self.inner.borrow(),
+      borrow: self.inner.read().unwrap(),
     }
   }
 
   pub fn has_children(&self) -> bool {
-    !self.inner.borrow().children.is_empty()
+    !self.inner.read().unwrap().children.is_empty()
   }
 
   pub fn name(&self) -> String {
-    self.inner.borrow().name.to_owned()
+    self.inner.read().unwrap().name.to_owned()
   }
 
   pub fn set_name(&self, name: impl AsRef<str>) -> Result<(), NodeError> {
@@ -317,25 +316,25 @@ impl Node {
       return Err(NodeError::EmptyName);
     }
 
-    self.inner.borrow_mut().name = name;
+    self.inner.write().unwrap().name = name;
     Ok(())
   }
 
   pub fn icon(&self) -> String {
-    format!("{} ", self.inner.borrow().icon)
+    format!("{} ", self.inner.read().unwrap().icon)
   }
 
   pub fn set_icon(&self, icon: impl AsRef<str>) {
     let icon = icon.as_ref().trim_start().to_owned();
-    self.inner.borrow_mut().icon = icon;
+    self.inner.write().unwrap().icon = icon;
   }
 
   pub fn data(&self) -> Option<NodeData> {
-    self.inner.borrow().data.clone()
+    self.inner.read().unwrap().data.clone()
   }
 
   pub fn set_data(&self, data: NodeData) -> Result<(), NodeError> {
-    let current = self.inner.borrow();
+    let current = self.inner.read().unwrap();
 
     match (current.data.as_ref(), &data) {
       // if nothing is set, set it
@@ -345,7 +344,7 @@ impl Node {
         }
 
         drop(current);
-        self.inner.borrow_mut().data = Some(data);
+        self.inner.write().unwrap().data = Some(data);
       }
 
       (None, NodeData::File(path)) => {
@@ -354,12 +353,12 @@ impl Node {
         }
 
         drop(current);
-        self.inner.borrow_mut().data = Some(data);
+        self.inner.write().unwrap().data = Some(data);
       }
 
       (Some(NodeData::Link(_)), NodeData::Link(_)) => {
         drop(current);
-        self.inner.borrow_mut().data = Some(data)
+        self.inner.write().unwrap().data = Some(data)
       }
 
       (Some(NodeData::File(_)), NodeData::File(_)) => return Err(NodeError::FileDataAlreadyExists),
@@ -372,17 +371,18 @@ impl Node {
   }
 
   pub fn is_expanded(&self) -> bool {
-    self.inner.borrow().is_expanded
+    self.inner.read().unwrap().is_expanded
   }
 
   pub fn set_expanded(&self, is_expanded: bool) {
-    self.inner.borrow_mut().is_expanded = is_expanded;
+    self.inner.write().unwrap().is_expanded = is_expanded;
   }
 
   pub fn parent(&self) -> Result<Node, NodeError> {
     self
       .inner
-      .borrow()
+      .read()
+      .unwrap()
       .parent
       .as_ref()
       .and_then(WeakNode::upgrade)
@@ -390,21 +390,21 @@ impl Node {
   }
 
   pub fn insert_top(&self, node: Node) {
-    node.inner.borrow_mut().parent = Some(self.downgrade());
-    self.inner.borrow_mut().children.insert(0, node);
+    node.inner.write().unwrap().parent = Some(self.downgrade());
+    self.inner.write().unwrap().children.insert(0, node);
   }
 
   pub fn insert_bottom(&self, node: Node) {
-    node.inner.borrow_mut().parent = Some(self.downgrade());
-    self.inner.borrow_mut().children.push(node);
+    node.inner.write().unwrap().parent = Some(self.downgrade());
+    self.inner.write().unwrap().children.push(node);
   }
 
   pub fn insert_before(&self, node: Node) -> Result<(), NodeError> {
     let parent = self.parent()?;
     let i = self.get_index(&parent)?;
 
-    node.inner.borrow_mut().parent = Some(parent.downgrade());
-    parent.inner.borrow_mut().children.insert(i, node);
+    node.inner.write().unwrap().parent = Some(parent.downgrade());
+    parent.inner.write().unwrap().children.insert(i, node);
     Ok(())
   }
 
@@ -412,13 +412,13 @@ impl Node {
     let parent = self.parent()?;
     let i = self.get_index(&parent)? + 1;
 
-    node.inner.borrow_mut().parent = Some(parent.downgrade());
-    parent.inner.borrow_mut().children.insert(i, node);
+    node.inner.write().unwrap().parent = Some(parent.downgrade());
+    parent.inner.write().unwrap().children.insert(i, node);
     Ok(())
   }
 
   pub fn delete(&self, node: Node) -> Result<(), NodeError> {
-    let mut inner = self.inner.borrow_mut();
+    let mut inner = self.inner.write().unwrap();
     let i = inner
       .children
       .iter()
@@ -463,7 +463,7 @@ impl Node {
   }
 
   pub fn toggle_expand(&self) {
-    let mut node = self.inner.borrow_mut();
+    let mut node = self.inner.write().unwrap();
     node.is_expanded = !node.is_expanded;
   }
 
@@ -481,7 +481,7 @@ impl Node {
   }
 
   fn paths_rec(&self, parent: &str, paths: &mut Vec<String>, filter: NodeFilter) {
-    for child in &self.inner.borrow().children {
+    for child in &self.inner.read().unwrap().children {
       let path = format!("{parent}/{name}", name = child.name());
 
       if filter.accepts(child) {
@@ -555,9 +555,9 @@ impl NodeFilter {
   fn accepts(&self, node: &Node) -> bool {
     match self {
       NodeFilter::Always => true,
-      NodeFilter::FileOrLink => node.inner.borrow().data.is_some(),
-      NodeFilter::FileOnly => matches!(node.inner.borrow().data, Some(NodeData::File(..))),
-      NodeFilter::LinkOnly => matches!(node.inner.borrow().data, Some(NodeData::Link(..))),
+      NodeFilter::FileOrLink => node.inner.read().unwrap().data.is_some(),
+      NodeFilter::FileOnly => matches!(node.inner.read().unwrap().data, Some(NodeData::File(..))),
+      NodeFilter::LinkOnly => matches!(node.inner.read().unwrap().data, Some(NodeData::Link(..))),
     }
   }
 }
@@ -565,7 +565,7 @@ impl NodeFilter {
 /// An iterator on a node children.
 #[derive(Debug)]
 pub struct Children<'a> {
-  borrow: Ref<'a, NodeInner>,
+  borrow: RwLockReadGuard<'a, NodeInner>,
 }
 
 impl<'a> Children<'a> {
@@ -642,7 +642,7 @@ mod tests {
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -660,7 +660,7 @@ mod tests {
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -669,7 +669,7 @@ mod tests {
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -718,7 +718,7 @@ mod tests {
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -727,7 +727,7 @@ mod tests {
       tree
         .get_node_by_line(1)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("a")
@@ -736,7 +736,7 @@ mod tests {
       tree
         .get_node_by_line(2)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("b")
@@ -745,7 +745,7 @@ mod tests {
       tree
         .get_node_by_line(3)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("z")
@@ -754,7 +754,7 @@ mod tests {
       tree
         .get_node_by_line(4)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("c")
@@ -773,7 +773,7 @@ mod tests {
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -790,7 +790,7 @@ mod tests {
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -838,7 +838,7 @@ mod tests {
       tree
         .get_node_by_line(0)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("root")
@@ -847,7 +847,7 @@ mod tests {
       tree
         .get_node_by_path(["a"], false)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("a")
@@ -856,7 +856,7 @@ mod tests {
       tree
         .get_node_by_path(["a", "x"], false)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("x")
@@ -865,7 +865,7 @@ mod tests {
       tree
         .get_node_by_path(["a", "y"], false)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("y")
@@ -874,7 +874,7 @@ mod tests {
       tree
         .get_node_by_path(["b"], false)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("b")
@@ -883,7 +883,7 @@ mod tests {
       tree
         .get_node_by_path(["b", "z"], false)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("z")
@@ -892,7 +892,7 @@ mod tests {
       tree
         .get_node_by_path(["c"], false)
         .as_ref()
-        .map(|node| node.inner.borrow())
+        .map(|node| node.inner.read().unwrap())
         .as_ref()
         .map(|node| node.name.as_str()),
       Some("c")
