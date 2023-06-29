@@ -206,7 +206,19 @@ pub enum Event {
   ToggleNode { id: usize },
 
   /// Node insertion at the current place.
-  InsertNode { mode: InsertMode },
+  InsertNode {
+    id: usize,
+    mode: InsertMode,
+    name: String,
+  },
+}
+
+impl Event {
+  fn accept_input(&mut self, input: String) {
+    if let Event::InsertNode { name, .. } = self {
+      *name = input
+    }
+  }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -343,6 +355,11 @@ pub struct TuiTree {
 
   /// Prompt used to ask stuff from the user.
   input_prompt: UserInputPrompt,
+
+  /// Event to be emitted once the input prompt is entered.
+  ///
+  /// Can be cancelled if the prompt is aborted.
+  input_pending_event: Option<Event>,
 }
 
 impl TuiTree {
@@ -357,6 +374,7 @@ impl TuiTree {
       node_cursor,
       top_shift: 0,
       input_prompt: UserInputPrompt::default(),
+      input_pending_event: None,
     }
   }
 
@@ -395,6 +413,15 @@ impl TuiTree {
   fn toggle_is_expanded(&mut self) {
     let mut data = self.node_cursor.node.data.lock().unwrap();
     data.is_expanded = !data.is_expanded;
+  }
+
+  fn open_prompt_insert_node(&mut self, title: &str, mode: InsertMode) {
+    self.input_prompt.show_with_title(title);
+    self.input_pending_event = Some(Event::InsertNode {
+      id: self.selected_node_id,
+      mode,
+      name: String::new(),
+    });
   }
 }
 
@@ -435,6 +462,11 @@ impl RawEventHandler for TuiTree {
     if self.input_prompt.is_visible() {
       if let (_, Some(input)) = self.input_prompt.react_raw(event)? {
         log::info!("user typed: {input}");
+
+        if let Some(mut pending_event) = self.input_pending_event.take() {
+          pending_event.accept_input(input);
+          self.emit_event(pending_event)?;
+        }
       }
 
       return Ok((HandledEvent::handled(), ()));
@@ -466,10 +498,28 @@ impl RawEventHandler for TuiTree {
 
         KeyCode::Char('o') => {
           if !self.input_prompt.is_visible() {
-            self.input_prompt.show_with_title("insert after:");
-            self.emit_event(Event::InsertNode {
-              mode: InsertMode::After,
-            })?;
+            self.open_prompt_insert_node("insert after:", InsertMode::After);
+            return Ok((HandledEvent::handled(), ()));
+          }
+        }
+
+        KeyCode::Char('O') => {
+          if !self.input_prompt.is_visible() {
+            self.open_prompt_insert_node("insert before:", InsertMode::Before);
+            return Ok((HandledEvent::handled(), ()));
+          }
+        }
+
+        KeyCode::Char('i') => {
+          if !self.input_prompt.is_visible() {
+            self.open_prompt_insert_node("insert in/bottom:", InsertMode::InsideBottom);
+            return Ok((HandledEvent::handled(), ()));
+          }
+        }
+
+        KeyCode::Char('I') => {
+          if !self.input_prompt.is_visible() {
+            self.open_prompt_insert_node("insert in/top:", InsertMode::InsideTop);
             return Ok((HandledEvent::handled(), ()));
           }
         }
@@ -844,6 +894,12 @@ impl Tui {
         match req {
           Request::NewTree(tree) => {
             self.tree = tree;
+            self.tree.rect = self.terminal.get_frame().size();
+          }
+
+          Request::NodeInserted { node, mode } => {
+            // TODO: node insertion
+            //self.tree.node_cursor.node
           }
 
           Request::StickyMsg { span, timeout } => {
