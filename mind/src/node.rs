@@ -415,12 +415,26 @@ impl Node {
 
   pub fn insert_top(&self, node: Node) {
     node.inner.write().unwrap().parent = Some(self.downgrade());
-    self.inner.write().unwrap().children.insert(0, node);
+
+    let mut children = self.inner.write().unwrap();
+    if let Some(first) = children.children.first() {
+      first.inner.write().unwrap().prev = Some(node.clone());
+      node.inner.write().unwrap().next = Some(first.clone());
+    }
+
+    children.children.insert(0, node);
   }
 
   pub fn insert_bottom(&self, node: Node) {
     node.inner.write().unwrap().parent = Some(self.downgrade());
-    self.inner.write().unwrap().children.push(node);
+
+    let mut children = self.inner.write().unwrap();
+    if let Some(last) = children.children.last() {
+      last.inner.write().unwrap().next = Some(node.clone());
+      node.inner.write().unwrap().prev = Some(last.clone());
+    }
+
+    children.children.push(node);
   }
 
   pub fn insert_before(&self, node: Node) -> Result<(), NodeError> {

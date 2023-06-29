@@ -8,7 +8,7 @@ use log::LevelFilter;
 use mind_tree::{
   config::Config,
   forest::{Forest, ForestError},
-  node::{Cursor, Node},
+  node::{Cursor, Node, NodeError},
 };
 use simplelog::WriteLogger;
 use std::{
@@ -137,6 +137,17 @@ fn bootstrap() -> Result<(), AppError> {
 
       Event::InsertNode { id, mode, name } => {
         log::info!("inserting node {id} {name}: {mode:?}");
+        if let Some(anchor) = forest.main_tree().get_node_by_line(id) {
+          let node = Node::new(name, "");
+          match mode {
+            InsertMode::InsideTop => anchor.insert_top(node),
+            InsertMode::InsideBottom => anchor.insert_bottom(node),
+            InsertMode::Before => anchor.insert_before(node)?,
+            InsertMode::After => anchor.insert_after(node)?,
+          }
+
+          // TODO: refresh the UI
+        }
       }
 
       _ => (),
@@ -188,6 +199,9 @@ pub enum AppError {
 
   #[error("forest error: {0}")]
   ForestError(#[from] ForestError),
+
+  #[error("node error: {0}")]
+  NodeError(#[from] NodeError),
 }
 
 /// Event emitted in the TUI when something happens.
