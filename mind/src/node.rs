@@ -99,6 +99,8 @@ pub struct Node {
   inner: Arc<RwLock<NodeInner>>,
 }
 
+impl Eq for Node {}
+
 impl PartialEq for Node {
   fn eq(&self, other: &Self) -> bool {
     Arc::as_ptr(&self.inner).eq(&Arc::as_ptr(&other.inner))
@@ -590,6 +592,14 @@ impl<'a> Children<'a> {
   pub fn into_iter(&'a self) -> impl Iterator<Item = &'_ Node> {
     self.borrow.children.iter()
   }
+
+  pub fn all_except_last(&'a self) -> impl Iterator<Item = &'_ Node> {
+    self.borrow.children[..self.borrow.children.len() - 1].iter()
+  }
+
+  pub fn last(&'a self) -> Option<&'a Node> {
+    self.borrow.children.last()
+  }
 }
 
 /// A node cursor to ease moving around.
@@ -606,6 +616,16 @@ impl Cursor {
   /// Check whether the node is expanded.
   pub fn is_expanded(&self) -> bool {
     self.node.inner.read().unwrap().is_expanded
+  }
+
+  /// Check whether the cursor points to the given node.
+  pub fn points_to(&self, node: &Node) -> bool {
+    &self.node == node
+  }
+
+  pub fn toggle_expand(&self) {
+    let mut inner = self.node.inner.write().unwrap();
+    inner.is_expanded = !inner.is_expanded;
   }
 
   /// Go to parent.
