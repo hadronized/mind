@@ -138,8 +138,8 @@ fn bootstrap() -> Result<(), AppError> {
         }
       }
 
-      Event::InsertNode { mode } => {
-        log::info!("inserting node: {mode:?}");
+      Event::InsertNode { id, mode, name } => {
+        log::info!("inserting node {id} {name}: {mode:?}");
       }
 
       _ => (),
@@ -895,11 +895,6 @@ impl Tui {
           Request::NewTree(tree) => {
             self.tree = tree;
             self.tree.rect = self.terminal.get_frame().size();
-          }
-
-          Request::NodeInserted { node, mode } => {
-            // TODO: node insertion
-            //self.tree.node_cursor.node
           }
 
           Request::StickyMsg { span, timeout } => {
