@@ -111,6 +111,7 @@ fn bootstrap() -> Result<(), AppError> {
       .map_err(AppError::Request)?;
   }
 
+  // TODO: we need a dispatcher with an indirection here so that we don’t break the loop on bad events
   // main loop of our logic application
   while let Ok(event) = event_rx.recv() {
     match event {
@@ -146,7 +147,7 @@ fn bootstrap() -> Result<(), AppError> {
             InsertMode::After => anchor.insert_after(node)?,
           }
 
-          // TODO: refresh the UI
+          request_sx.send(Request::InsertedNode { id, mode }).unwrap();
         }
       }
 
@@ -156,7 +157,6 @@ fn bootstrap() -> Result<(), AppError> {
 
   if let Err(err) = tui_thread.join() {
     log::error!("TUI killed while waiting for it: {:?}", err);
-    exit(1);
   }
 
   Ok(())
@@ -262,6 +262,9 @@ pub enum Request {
 
   /// Ask the TUI to quit.
   Quit,
+
+  /// Ask the GUI to adapt to a node insertion.
+  InsertedNode { id: usize, mode: InsertMode },
 }
 
 impl Request {
@@ -759,6 +762,12 @@ impl Tui {
           }
 
           Request::Quit => return Ok(()),
+
+          Request::InsertedNode { mode, .. } => {
+            if let InsertMode::Before = mode {
+              self.tree.selected_node_id += 1;
+            }
+          }
         }
       }
 
