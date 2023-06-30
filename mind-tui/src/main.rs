@@ -111,11 +111,25 @@ fn bootstrap() -> Result<(), AppError> {
       .map_err(AppError::Request)?;
   }
 
+  // boolean representing when the tree has been modified and requires saving before quitting
+  let mut dirty = false;
+
   // TODO: we need a dispatcher with an indirection here so that we don’t break the loop on bad events
   // main loop of our logic application
   while let Ok(event) = event_rx.recv() {
     match event {
-      Event::Command(UserCmd::Quit) => request_sx.send(Request::Quit).unwrap(),
+      Event::Command(UserCmd::Quit { force }) => {
+        if dirty && !force {
+          request_sx
+            .send(Request::info_msg(
+              "modified tree; please save or force quit (:w + :q; :q!)",
+              Duration::from_secs(5),
+            ))
+            .unwrap();
+        } else {
+          request_sx.send(Request::Quit).unwrap();
+        }
+      }
 
       Event::Command(UserCmd::Save) => {
         forest.persist(
@@ -124,6 +138,8 @@ fn bootstrap() -> Result<(), AppError> {
             .forest_path()
             .ok_or(AppError::NoForestPath)?,
         )?;
+
+        dirty = false;
 
         request_sx
           .send(Request::info_msg("state saved", Duration::from_secs(5)))
@@ -147,6 +163,7 @@ fn bootstrap() -> Result<(), AppError> {
             InsertMode::After => anchor.insert_after(node)?,
           }
 
+          dirty = true;
           request_sx.send(Request::InsertedNode { id, mode }).unwrap();
         }
       }
@@ -286,7 +303,8 @@ impl Request {
 /// Those commands can be sent by typing them in the command line, for now.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum UserCmd {
-  Quit,
+  Quit { force: bool },
+
   Save,
 }
 
@@ -295,7 +313,8 @@ impl FromStr for UserCmd {
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s {
-      "q" | "quit" => Ok(UserCmd::Quit),
+      "q" | "quit" => Ok(UserCmd::Quit { force: false }),
+      "q!" | "quit!" => Ok(UserCmd::Quit { force: true }),
       "w" | "write" => Ok(UserCmd::Save),
       _ => Err(AppError::UnknownCommand(s.to_owned())),
     }
@@ -959,7 +978,9 @@ impl CmdLine {
   fn new(event_sx: Sender<Event>) -> Self {
     let input_prompt = UserInputPrompt::new_with_completions([
       "q".to_owned(),
+      "q!".to_owned(),
       "quit".to_owned(),
+      "quit!".to_owned(),
       "w".to_owned(),
       "write".to_owned(),
     ]);
