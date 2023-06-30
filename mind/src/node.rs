@@ -439,19 +439,52 @@ impl Node {
 
   pub fn insert_before(&self, node: Node) -> Result<(), NodeError> {
     let parent = self.parent()?;
-    let i = self.get_index(&parent)?;
 
-    node.inner.write().unwrap().parent = Some(parent.downgrade());
-    parent.inner.write().unwrap().children.insert(i, node);
+    // set parent link, prev / next between selected node and node to insert
+    {
+      let mut inner = node.inner.write().unwrap();
+      inner.parent = Some(parent.downgrade());
+      inner.next = Some(self.clone());
+      self.inner.write().unwrap().prev = Some(node.clone());
+    }
+
+    let i = self.get_index(&parent)?;
+    let mut children = parent.inner.write().unwrap();
+
+    // if there is a node in the children before the one we add, we set its next and set our prev
+    if i > 0 {
+      if let Some(prev) = children.children.get(i - 1) {
+        prev.inner.write().unwrap().next = Some(node.clone());
+        node.inner.write().unwrap().prev = Some(prev.clone());
+      }
+    }
+
+    children.children.insert(i, node);
+
     Ok(())
   }
 
   pub fn insert_after(&self, node: Node) -> Result<(), NodeError> {
     let parent = self.parent()?;
-    let i = self.get_index(&parent)? + 1;
 
-    node.inner.write().unwrap().parent = Some(parent.downgrade());
-    parent.inner.write().unwrap().children.insert(i, node);
+    // set parent link, prev / next between selected node and node to insert
+    {
+      let mut inner = node.inner.write().unwrap();
+      inner.parent = Some(parent.downgrade());
+      inner.prev = Some(self.clone());
+      self.inner.write().unwrap().next = Some(node.clone());
+    }
+
+    let i = self.get_index(&parent)? + 1;
+    let mut children = parent.inner.write().unwrap();
+
+    // if there is a node in the children before the one we add, we set its next and set our prev
+    if let Some(next) = children.children.get(i) {
+      next.inner.write().unwrap().prev = Some(node.clone());
+      node.inner.write().unwrap().next = Some(next.clone());
+    }
+
+    children.children.insert(i, node);
     Ok(())
   }
 
