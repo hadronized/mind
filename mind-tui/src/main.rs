@@ -8,7 +8,7 @@ use log::LevelFilter;
 use mind_tree::{
   config::Config,
   forest::{Forest, ForestError},
-  node::{Node, Tree},
+  node::{Cursor, Node, NodeError},
 };
 use simplelog::WriteLogger;
 use std::{
@@ -17,10 +17,7 @@ use std::{
   path::PathBuf,
   process::exit,
   str::FromStr,
-  sync::{
-    mpsc::{channel, Receiver, SendError, Sender},
-    Arc, Mutex,
-  },
+  sync::mpsc::{channel, Receiver, SendError, Sender},
   thread,
   time::{Duration, Instant},
 };
@@ -94,13 +91,13 @@ fn bootstrap() -> Result<(), AppError> {
       .forest_path()
       .ok_or(AppError::NoForestPath)?,
   )?;
-  let main_tree = tree_to_tui(Rect::default(), event_sx.clone(), forest.main_tree());
+  let main_tree = TuiTree::new(Rect::default(), event_sx.clone(), forest.main_tree().root());
 
   // spawn a thread for the TUI; we can send requests to it and it sends events back to us
   let tui_thread = thread::spawn(move || {
     let tui = Tui::new(main_tree, event_sx, request_rx).expect("TUI creation");
     if let Err(err) = tui.run() {
-      eprintln!("TUI exited with error: {}", err);
+      log::error!("TUI exited with error: {}", err);
       exit(1);
     }
   });
@@ -114,6 +111,7 @@ fn bootstrap() -> Result<(), AppError> {
       .map_err(AppError::Request)?;
   }
 
+  // TODO: we need a dispatcher with an indirection here so that we don’t break the loop on bad events
   // main loop of our logic application
   while let Ok(event) = event_rx.recv() {
     match event {
@@ -138,13 +136,27 @@ fn bootstrap() -> Result<(), AppError> {
         }
       }
 
+      Event::InsertNode { id, mode, name } => {
+        log::info!("inserting node {id} {name}: {mode:?}");
+        if let Some(anchor) = forest.main_tree().get_node_by_line(id) {
+          let node = Node::new(name, "");
+          match mode {
+            InsertMode::InsideTop => anchor.insert_top(node),
+            InsertMode::InsideBottom => anchor.insert_bottom(node),
+            InsertMode::Before => anchor.insert_before(node)?,
+            InsertMode::After => anchor.insert_after(node)?,
+          }
+
+          request_sx.send(Request::InsertedNode { id, mode }).unwrap();
+        }
+      }
+
       _ => (),
     }
   }
 
   if let Err(err) = tui_thread.join() {
-    eprintln!("TUI killed while waiting for it: {:?}", err);
-    exit(1);
+    log::error!("TUI killed while waiting for it: {:?}", err);
   }
 
   Ok(())
@@ -187,12 +199,15 @@ pub enum AppError {
 
   #[error("forest error: {0}")]
   ForestError(#[from] ForestError),
+
+  #[error("node error: {0}")]
+  NodeError(#[from] NodeError),
 }
 
 /// Event emitted in the TUI when something happens.
 #[derive(Clone, Debug)]
 pub enum Event {
-  /// A command was entereed.
+  /// A command was entered.
   Command(UserCmd),
 
   /// Node selected.
@@ -200,6 +215,37 @@ pub enum Event {
 
   /// Toggle node.
   ToggleNode { id: usize },
+
+  /// Node insertion at the current place.
+  InsertNode {
+    id: usize,
+    mode: InsertMode,
+    name: String,
+  },
+}
+
+impl Event {
+  fn accept_input(&mut self, input: String) {
+    if let Event::InsertNode { name, .. } = self {
+      *name = input
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum InsertMode {
+  /// Insert the node inside the selected node, at the top.
+  InsideTop,
+
+  /// Insert the node inside the selected node, at the bottom.
+  #[default]
+  InsideBottom,
+
+  /// Insert the node as a sibling, just before the selected node (if the selected has a parent).
+  Before,
+
+  /// Insert the node as a sibling, just after the selected node (if the selected has a parent)
+  After,
 }
 
 /// Request sent to the TUI to make a change in it.
@@ -216,6 +262,9 @@ pub enum Request {
 
   /// Ask the TUI to quit.
   Quit,
+
+  /// Ask the GUI to adapt to a node insertion.
+  InsertedNode { id: usize, mode: InsertMode },
 }
 
 impl Request {
@@ -307,41 +356,59 @@ pub struct TuiTree {
   event_sx: Sender<Event>,
 
   /// Root node.
-  root: TuiNode,
+  root: Node,
 
   /// Currently selected node ID.
   selected_node_id: usize,
 
   /// Node cursor.
-  node_cursor: TuiNodeCursor,
+  cursor: Cursor,
 
   /// Top-level shift.
   top_shift: u16,
+
+  /// Prompt used to ask stuff from the user.
+  input_prompt: UserInputPrompt,
+
+  /// Event to be emitted once the input prompt is entered.
+  ///
+  /// Can be cancelled if the prompt is aborted.
+  input_pending_event: Option<Event>,
 }
 
 impl TuiTree {
-  pub fn new(rect: Rect, event_sx: Sender<Event>, root: TuiNode) -> Self {
-    let node_cursor = TuiNodeCursor::new(root.clone());
+  pub fn new(rect: Rect, event_sx: Sender<Event>, root: Node) -> Self {
+    let node_cursor = Cursor::new(root.clone());
 
     Self {
       rect,
       event_sx,
       root,
       selected_node_id: 0,
-      node_cursor,
+      cursor: node_cursor,
       top_shift: 0,
+      input_prompt: UserInputPrompt::default(),
+      input_pending_event: None,
     }
   }
 
+  fn emit_event(&self, event: Event) -> Result<(), AppError> {
+    self
+      .event_sx
+      .send(event)
+      .map_err(|e| AppError::Event(e.to_string()))?;
+    Ok(())
+  }
+
   fn select_prev_node(&mut self) {
-    if self.node_cursor.visual_prev() {
+    if self.cursor.visual_prev() {
       self.selected_node_id -= 1;
       self.adjust_view();
     }
   }
 
   fn select_next_node(&mut self) {
-    if self.node_cursor.visual_next() {
+    if self.cursor.visual_next() {
       self.selected_node_id += 1;
       self.adjust_view();
     }
@@ -357,28 +424,64 @@ impl TuiTree {
     }
   }
 
-  fn toggle_is_expanded(&mut self) {
-    let mut data = self.node_cursor.node.data.lock().unwrap();
-    data.is_expanded = !data.is_expanded;
+  fn open_prompt_insert_node(&mut self, title: &str, mode: InsertMode) {
+    self.input_prompt.show_with_title(title);
+    self.input_pending_event = Some(Event::InsertNode {
+      id: self.selected_node_id,
+      mode,
+      name: String::new(),
+    });
   }
 }
 
 impl<'a> Widget for &'a TuiTree {
   fn render(self, area: Rect, buf: &mut Buffer) {
-    self.root.render_with_indent(
+    render_with_indent(
+      &self.root,
       self.top_shift,
       0,
       area,
       buf,
       &Indent::default(),
       false,
-      &self.node_cursor,
+      &self.cursor,
     );
+
+    if let Some(ref prompt) = self.input_prompt.prompt {
+      prompt.render(
+        Rect {
+          y: area.height - 1,
+          height: 1,
+          ..area
+        },
+        buf,
+      );
+
+      // TODO: position the cursor
+    }
   }
 }
 
 impl RawEventHandler for TuiTree {
-  fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError> {
+  type Feedback = ();
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError> {
+    if self.input_prompt.is_visible() {
+      if let (_, Some(input)) = self.input_prompt.react_raw(event)? {
+        log::info!("user typed: {input}");
+
+        if let Some(mut pending_event) = self.input_pending_event.take() {
+          pending_event.accept_input(input);
+          self.emit_event(pending_event)?;
+        }
+      }
+
+      return Ok((HandledEvent::handled(), ()));
+    }
+
     match event {
       crossterm::event::Event::Resize(width, height) => {
         self.rect.width = width;
@@ -389,35 +492,53 @@ impl RawEventHandler for TuiTree {
       crossterm::event::Event::Key(KeyEvent { code, .. }) => match code {
         KeyCode::Char('t') => {
           self.select_next_node();
-          self
-            .event_sx
-            .send(Event::NodeSelected {
-              id: self.selected_node_id,
-            })
-            .map_err(|e| AppError::Event(e.to_string()))?;
-          return Ok(HandledEvent::handled());
+          self.emit_event(Event::NodeSelected {
+            id: self.selected_node_id,
+          })?;
+          return Ok((HandledEvent::handled(), ()));
         }
 
         KeyCode::Char('s') => {
           self.select_prev_node();
-          self
-            .event_sx
-            .send(Event::NodeSelected {
-              id: self.selected_node_id,
-            })
-            .map_err(|e| AppError::Event(e.to_string()))?;
-          return Ok(HandledEvent::handled());
+          self.emit_event(Event::NodeSelected {
+            id: self.selected_node_id,
+          })?;
+          return Ok((HandledEvent::handled(), ()));
+        }
+
+        KeyCode::Char('o') => {
+          if !self.input_prompt.is_visible() {
+            self.open_prompt_insert_node("insert after:", InsertMode::After);
+            return Ok((HandledEvent::handled(), ()));
+          }
+        }
+
+        KeyCode::Char('O') => {
+          if !self.input_prompt.is_visible() {
+            self.open_prompt_insert_node("insert before:", InsertMode::Before);
+            return Ok((HandledEvent::handled(), ()));
+          }
+        }
+
+        KeyCode::Char('i') => {
+          if !self.input_prompt.is_visible() {
+            self.open_prompt_insert_node("insert in/bottom:", InsertMode::InsideBottom);
+            return Ok((HandledEvent::handled(), ()));
+          }
+        }
+
+        KeyCode::Char('I') => {
+          if !self.input_prompt.is_visible() {
+            self.open_prompt_insert_node("insert in/top:", InsertMode::InsideTop);
+            return Ok((HandledEvent::handled(), ()));
+          }
         }
 
         KeyCode::Tab => {
-          self.toggle_is_expanded();
-          self
-            .event_sx
-            .send(Event::ToggleNode {
-              id: self.selected_node_id,
-            })
-            .map_err(|e| AppError::Event(e.to_string()))?;
-          return Ok(HandledEvent::handled());
+          self.emit_event(Event::ToggleNode {
+            id: self.selected_node_id,
+          })?;
+          return Ok((HandledEvent::handled(), ()));
         }
 
         _ => (),
@@ -425,120 +546,87 @@ impl RawEventHandler for TuiTree {
       _ => (),
     }
 
-    Ok(HandledEvent::Unhandled(event))
+    Ok((HandledEvent::Unhandled(event), ()))
   }
 }
 
-/// A visual representation of a single node in the TUI.
-#[derive(Clone, Debug)]
-pub struct TuiNode {
-  data: Arc<Mutex<TuiNodeData>>,
-}
+// TODO: check for x boundaries?
+/// Render the node in the given area with the given indent level, and its children.
+/// Abort before rendering outside of the area (Y axis).
+fn render_with_indent(
+  node: &Node,
+  top_shift: u16,
+  mut id: u16,
+  mut area: Rect,
+  buf: &mut Buffer,
+  indent: &Indent,
+  is_last: bool,
+  cursor: &Cursor,
+) -> Option<(Rect, u16)> {
+  if id >= top_shift {
+    // indent guides
+    let indent_guides = indent.to_indent_guides(is_last);
+    buf.set_string(
+      area.x,
+      area.y,
+      &indent_guides,
+      Style::default()
+        .fg(Color::Black)
+        .add_modifier(Modifier::DIM),
+    );
 
-impl TuiNode {
-  pub fn new(
-    icon: impl Into<Span<'static>>,
-    text: impl Into<Span<'static>>,
-    is_expanded: bool,
-    children: impl Into<Vec<TuiNode>>,
-  ) -> Self {
-    let children = children.into();
-    let children2 = children.clone();
-    let data = Arc::new(Mutex::new(TuiNodeData::new(
-      icon,
-      text,
-      is_expanded,
-      children,
-    )));
-    let node = Self { data };
+    let mut render_x = indent_guides.chars().count() as u16;
 
-    // set parent
-    for child in &children2 {
-      child.data.lock().unwrap().set_parent(node.clone());
-    }
-
-    // siblings
-    for (a, b) in children2.iter().zip(children2.iter().skip(1)) {
-      a.data.lock().unwrap().set_next(b.clone());
-      b.data.lock().unwrap().set_prev(a.clone());
-    }
-
-    node
-  }
-
-  // TODO: check for x boundaries?
-  /// Render the node in the given area with the given indent level, and its children.
-  /// Abort before rendering outside of the area (Y axis).
-  fn render_with_indent(
-    &self,
-    top_shift: u16,
-    mut id: u16,
-    mut area: Rect,
-    buf: &mut Buffer,
-    indent: &Indent,
-    is_last: bool,
-    cursor: &TuiNodeCursor,
-  ) -> Option<(Rect, u16)> {
-    // render the current node
-    let data = self.data.lock().unwrap();
-
-    if id >= top_shift {
-      // indent guides
-      let indent_guides = indent.to_indent_guides(is_last);
-      buf.set_string(
-        area.x,
-        area.y,
-        &indent_guides,
+    // arrow (expanded / collapsed) for nodes with children
+    if node.has_children() {
+      let arrow = if node.is_expanded() { " " } else { " " };
+      let arrow = Span::styled(
+        arrow,
         Style::default()
           .fg(Color::Black)
           .add_modifier(Modifier::DIM),
       );
-
-      let mut render_x = indent_guides.chars().count() as u16;
-
-      // icon rendering
-      buf.set_string(render_x, area.y, &data.icon.content, data.icon.style);
-      render_x += data.icon.width() as u16;
-
-      // content rendering
-      buf.set_string(render_x, area.y, &data.text.content, data.text.style);
-
-      if Arc::as_ptr(&self.data) == Arc::as_ptr(&cursor.node.data) {
-        buf.set_style(
-          Rect::new(0, area.y, area.width, 1),
-          Style::default().bg(Color::Black),
-        );
-      }
+      buf.set_string(render_x, area.y, &arrow.content, arrow.style);
+      render_x += arrow.width() as u16;
     }
 
-    // nothing else to do if we don’t have any children or they are collapsed
-    if data.children.is_empty() || !data.is_expanded {
-      return Some((area, id));
+    // icon rendering
+    let icon = Span::styled(node.icon(), Style::default().fg(Color::Green));
+    buf.set_string(render_x, area.y, &icon.content, icon.style);
+    render_x += icon.width() as u16;
+
+    // content rendering
+    let text_style = Style::default();
+    let text_style = if node.has_children() {
+      text_style.fg(Color::Blue)
+    } else {
+      text_style
+    };
+    let text_style = if node.data().is_some() {
+      text_style.add_modifier(Modifier::BOLD)
+    } else {
+      text_style
+    };
+    let text = Span::styled(node.name(), text_style);
+    buf.set_string(render_x, area.y, &text.content, text.style);
+
+    if cursor.points_to(node) {
+      buf.set_style(
+        Rect::new(0, area.y, area.width, 1),
+        Style::default().bg(Color::Black),
+      );
     }
+  }
 
-    // then render all of its children, if any, as long as we are not going out of area
-    let new_indent = indent.deeper(false);
-    for child in &data.children[..data.children.len() - 1] {
-      // BUG: I think the bug lies here
-      if id >= top_shift {
-        area.y += 1;
-      }
+  // nothing else to do if we don’t have any children or they are collapsed
+  if !node.has_children() || !node.is_expanded() {
+    return Some((area, id));
+  }
 
-      // abort if we are at the bottom of the area
-      if area.y >= area.height {
-        return None;
-      }
-
-      // abort if a child hit the bottom
-      let (new_area, new_id) =
-        child.render_with_indent(top_shift, id + 1, area, buf, &new_indent, false, cursor)?;
-
-      area = new_area;
-      id = new_id;
-    }
-
+  // then render all of its children but the last (for indent quides), if any, as long as we are not going out of area
+  let new_indent = indent.deeper(false);
+  for child in node.children().all_except_last() {
     if id >= top_shift {
-      // the last child is to be treated specifically for the indent sign
       area.y += 1;
     }
 
@@ -548,8 +636,35 @@ impl TuiNode {
     }
 
     // abort if a child hit the bottom
+    let (new_area, new_id) = render_with_indent(
+      child,
+      top_shift,
+      id + 1,
+      area,
+      buf,
+      &new_indent,
+      false,
+      cursor,
+    )?;
+
+    area = new_area;
+    id = new_id;
+  }
+
+  if id >= top_shift {
+    // the last child is to be treated specifically for the indent sign
+    area.y += 1;
+  }
+
+  // abort if we are at the bottom of the area
+  if area.y >= area.height {
+    return None;
+  }
+
+  if let Some(last) = node.children().last() {
     let new_indent = indent.deeper(true);
-    let (new_area, new_id) = data.children[data.children.len() - 1].render_with_indent(
+    let (new_area, new_id) = render_with_indent(
+      last,
       top_shift,
       id + 1,
       area,
@@ -559,159 +674,15 @@ impl TuiNode {
       cursor,
     )?;
 
-    Some((new_area, new_id))
-  }
-}
-
-#[derive(Debug)]
-pub struct TuiNodeData {
-  icon: Span<'static>,
-  text: Span<'static>,
-  is_expanded: bool,
-  parent: Option<TuiNode>,
-  prev: Option<TuiNode>,
-  next: Option<TuiNode>,
-  children: Vec<TuiNode>,
-}
-
-impl TuiNodeData {
-  fn new(
-    icon: impl Into<Span<'static>>,
-    text: impl Into<Span<'static>>,
-    is_expanded: bool,
-    children: impl Into<Vec<TuiNode>>,
-  ) -> Self {
-    Self {
-      icon: icon.into(),
-      text: text.into(),
-      is_expanded,
-      parent: None,
-      prev: None,
-      next: None,
-      children: children.into(),
-    }
+    area = new_area;
+    id = new_id;
   }
 
-  fn set_parent(&mut self, parent: TuiNode) {
-    self.parent = Some(parent);
-  }
-
-  fn set_prev(&mut self, prev: TuiNode) {
-    self.prev = Some(prev);
-  }
-
-  fn set_next(&mut self, next: TuiNode) {
-    self.next = Some(next);
-  }
-}
-
-/// A node cursor to ease moving around.
-#[derive(Clone, Debug)]
-struct TuiNodeCursor {
-  node: TuiNode,
-}
-
-impl TuiNodeCursor {
-  fn new(node: TuiNode) -> Self {
-    Self { node }
-  }
-
-  /// Check whether the node is expanded.
-  fn is_expanded(&self) -> bool {
-    self.node.data.lock().unwrap().is_expanded
-  }
-
-  /// Go to parent.
-  ///
-  /// Return `false` if it has no parent.
-  fn parent(&mut self) -> bool {
-    let parent = self.node.data.lock().unwrap().parent.clone();
-    if let Some(parent) = parent {
-      self.node = parent;
-      true
-    } else {
-      false
-    }
-  }
-
-  /// Go to previous sibling.
-  ///
-  /// Return `false` if it has no previous sibling.
-  fn prev_sibling(&mut self) -> bool {
-    let prev = self.node.data.lock().unwrap().prev.clone();
-    if let Some(prev) = prev {
-      self.node = prev;
-      true
-    } else {
-      false
-    }
-  }
-
-  /// Go to next sibling.
-  ///
-  /// Return `false` if it has no nextious sibling.
-  fn next_sibling(&mut self) -> bool {
-    let next = self.node.data.lock().unwrap().next.clone();
-    if let Some(next) = next {
-      self.node = next;
-      true
-    } else {
-      false
-    }
-  }
-
-  /// Go to the first child, if any.
-  ///
-  /// Return `false` if it has no child.
-  fn first_child(&mut self) -> bool {
-    let child = self.node.data.lock().unwrap().children.first().cloned();
-    if let Some(child) = child {
-      self.node = child;
-      true
-    } else {
-      false
-    }
-  }
-
-  /// Go to the “previous” node.
-  ///
-  /// The previous node is the visually preceding node. That function will respect expanded / collapsed nodes.
-  fn visual_prev(&mut self) -> bool {
-    if self.prev_sibling() {
-      // ensure we go down the previous node
-      while self.is_expanded() && self.first_child() {
-        while self.next_sibling() {}
-      }
-
-      true
-    } else {
-      self.parent()
-    }
-  }
-
-  /// Go to the “next” node.
-  ///
-  /// The next node is the visually succeeding node. That function will respect expanded / collapsed nodes.
-  fn visual_next(&mut self) -> bool {
-    if self.is_expanded() && self.first_child() || self.next_sibling() {
-      true
-    } else {
-      let mut cursor = self.clone();
-      while cursor.parent() {
-        if cursor.next_sibling() {
-          *self = cursor;
-          return true;
-        }
-      }
-
-      false
-    }
-  }
+  Some((area, id))
 }
 
 struct Tui {
   terminal: Terminal<CrosstermBackend<Stdout>>,
-  event_sx: Sender<Event>,
   request_rx: Receiver<Request>,
 
   // components
@@ -736,12 +707,11 @@ impl Tui {
 
     tree.rect = terminal.get_frame().size();
 
-    let cmd_line = CmdLine::new(event_sx.clone());
+    let cmd_line = CmdLine::new(event_sx);
     let sticky_msg = None;
 
     Ok(Tui {
       terminal,
-      event_sx,
       request_rx,
       cmd_line,
       tree,
@@ -762,6 +732,7 @@ impl Tui {
 
   pub fn run(mut self) -> Result<(), AppError> {
     let mut needs_redraw = true;
+
     loop {
       // event available
       let available_event = crossterm::event::poll(Duration::from_millis(50))
@@ -769,10 +740,8 @@ impl Tui {
 
       if available_event {
         let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
-        let handled_event = self
-          .cmd_line
-          .react_raw(event)
-          .and_then(|handled| handled.or_else(&mut self.tree));
+        let handled_event = self.react_raw(event).map(|(handled, _)| handled);
+
         self.display_errors(handled_event, |event| {
           if let HandledEvent::Handled { requires_redraw } = event {
             needs_redraw |= requires_redraw;
@@ -785,6 +754,7 @@ impl Tui {
         match req {
           Request::NewTree(tree) => {
             self.tree = tree;
+            self.tree.rect = self.terminal.get_frame().size();
           }
 
           Request::StickyMsg { span, timeout } => {
@@ -792,6 +762,12 @@ impl Tui {
           }
 
           Request::Quit => return Ok(()),
+
+          Request::InsertedNode { mode, .. } => {
+            if let InsertMode::Before = mode {
+              self.tree.selected_node_id += 1;
+            }
+          }
         }
       }
 
@@ -800,66 +776,71 @@ impl Tui {
       // render
       needs_redraw = true;
       if needs_redraw {
-        self
-          .terminal
-          .draw(|f| {
-            let size = f.size();
-
-            // when the command line is active, this value contains -1 so that we do not overlap on the command line
-            let mut tree_height_bias = 0;
-
-            // render the command line, if any
-            if let Some(ref state) = self.cmd_line.state {
-              tree_height_bias = 1;
-
-              let y = size.height - 1;
-
-              // render the line
-              f.render_widget(
-                state,
-                Rect {
-                  y,
-                  height: 1,
-                  ..size
-                },
-              );
-
-              // position the cursor
-              f.set_cursor(size.x + 1 + state.cursor() as u16, y);
-            }
-
-            // render the tree
-            f.render_widget(
-              &self.tree,
-              Rect {
-                height: self.tree.rect.height - tree_height_bias,
-                ..self.tree.rect
-              },
-            );
-
-            // render any sticky message, if any
-            if let Some(ref sticky_msg) = self.sticky_msg {
-              let p = tui::widgets::Paragraph::new(sticky_msg.span.content.as_ref())
-                .style(sticky_msg.span.style)
-                .wrap(tui::widgets::Wrap { trim: false })
-                .alignment(tui::layout::Alignment::Right);
-              let width = size.width / 4;
-              let height = size.height / 2;
-              f.render_widget(
-                p,
-                Rect {
-                  x: size.x + 3 * width,
-                  y: size.y,
-                  width,
-                  height,
-                },
-              );
-            }
-          })
-          .map_err(AppError::Render)?;
+        self.render()?;
         needs_redraw = false;
       }
     }
+  }
+
+  fn render(&mut self) -> Result<(), AppError> {
+    self
+      .terminal
+      .draw(|f| {
+        let size = f.size();
+
+        // when the command line is active, this value contains -1 so that we do not overlap on the command line
+        let mut tree_height_bias = 0;
+
+        // render the command line, if any
+        if let Some(ref prompt) = self.cmd_line.input_prompt.prompt {
+          tree_height_bias = 1;
+
+          let y = size.height - 1;
+
+          // render the line
+          f.render_widget(
+            prompt,
+            Rect {
+              y,
+              height: 1,
+              ..size
+            },
+          );
+
+          // position the cursor
+          f.set_cursor(size.x + 1 + prompt.cursor() as u16, y);
+        }
+
+        // render the tree
+        f.render_widget(
+          &self.tree,
+          Rect {
+            height: self.tree.rect.height - tree_height_bias,
+            ..self.tree.rect
+          },
+        );
+
+        // render any sticky message, if any
+        if let Some(ref sticky_msg) = self.sticky_msg {
+          let p = tui::widgets::Paragraph::new(sticky_msg.span.content.as_ref())
+            .style(sticky_msg.span.style)
+            .wrap(tui::widgets::Wrap { trim: false })
+            .alignment(tui::layout::Alignment::Right);
+          let width = size.width / 4;
+          let height = size.height / 2;
+          f.render_widget(
+            p,
+            Rect {
+              x: size.x + 3 * width,
+              y: size.y,
+              width,
+              height,
+            },
+          );
+        }
+      })
+      .map(|_| ())
+      .map_err(AppError::Render)
   }
 
   fn refresh(&mut self) {
@@ -894,6 +875,22 @@ impl Drop for Tui {
   }
 }
 
+impl RawEventHandler for Tui {
+  type Feedback = ();
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError> {
+    let handled = self
+      .cmd_line
+      .react_raw(event)
+      .map(|(handled, _)| handled)?
+      .and_then(&mut self.tree)?;
+    Ok((handled, ()))
+  }
+}
+
 /// Messages that won’t go out of the UI unless a given timeout is reached.
 #[derive(Debug)]
 pub struct StickyMsg {
@@ -912,7 +909,13 @@ impl StickyMsg {
 
 /// TUI components will react to raw events.
 pub trait RawEventHandler {
-  fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError>;
+  /// Feedback value returned by child to their parent.
+  type Feedback;
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError>;
 }
 
 /// Handled events.
@@ -934,10 +937,12 @@ impl HandledEvent {
     }
   }
 
-  // If the event is still unhandled, pass it to the next handler.
-  fn or_else(self, handler: &mut impl RawEventHandler) -> Result<Self, AppError> {
+  fn and_then<T>(self, next_handler: &mut T) -> Result<HandledEvent, AppError>
+  where
+    T: RawEventHandler,
+  {
     if let HandledEvent::Unhandled(event) = self {
-      handler.react_raw(event)
+      next_handler.react_raw(event).map(|(evt, _)| evt)
     } else {
       Ok(self)
     }
@@ -946,144 +951,232 @@ impl HandledEvent {
 
 #[derive(Debug)]
 pub struct CmdLine {
-  state: Option<CmdLineState>,
+  input_prompt: UserInputPrompt,
   event_sx: Sender<Event>,
 }
 
 impl CmdLine {
   fn new(event_sx: Sender<Event>) -> Self {
+    let input_prompt = UserInputPrompt::new_with_completions([
+      "q".to_owned(),
+      "quit".to_owned(),
+      "w".to_owned(),
+      "write".to_owned(),
+    ]);
+
     Self {
-      state: None,
+      input_prompt,
       event_sx,
     }
   }
 }
 
 impl RawEventHandler for CmdLine {
-  fn react_raw(&mut self, event: crossterm::event::Event) -> Result<HandledEvent, AppError> {
-    match self.state {
-      None => {
-        if let crossterm::event::Event::Key(KeyEvent {
-          code: KeyCode::Char(':'),
-          kind: KeyEventKind::Press,
-          ..
-        }) = event
-        {
-          self.state = Some(CmdLineState::default());
-          return Ok(HandledEvent::handled());
-        }
+  type Feedback = ();
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError> {
+    if self.input_prompt.is_visible() {
+      let (handled, input) = self.input_prompt.react_raw(event)?;
+
+      if let Some(input) = input {
+        // command line is complete
+        let usr_cmd = input.parse()?;
+
+        self
+          .event_sx
+          .send(Event::Command(usr_cmd))
+          .map_err(|e| AppError::Event(e.to_string()))?;
       }
 
-      Some(ref mut state) => {
-        if let crossterm::event::Event::Key(KeyEvent {
-          code,
-          kind: KeyEventKind::Press,
-          ..
-        }) = event
-        {
-          match code {
-            KeyCode::Esc => {
-              // disable  the command line
-              self.state = None;
-              return Ok(HandledEvent::handled());
-            }
+      return Ok((handled, ()));
+    } else if let crossterm::event::Event::Key(KeyEvent {
+      code: KeyCode::Char(':'),
+      kind: KeyEventKind::Press,
+      ..
+    }) = event
+    {
+      self.input_prompt.show();
+      return Ok((HandledEvent::handled(), ()));
+    }
 
-            KeyCode::Enter => {
-              // command line is complete
-              let parsed = state.as_str().parse();
-              self.state = None;
+    Ok((HandledEvent::Unhandled(event), ()))
+  }
+}
 
-              self
-                .event_sx
-                .send(Event::Command(parsed?))
-                .map_err(|e| AppError::Event(e.to_string()))?;
+/// Component displaying an input prompt to ask data from the user.
+#[derive(Debug, Default)]
+pub struct UserInputPrompt {
+  prompt: Option<InputPrompt>,
+  completions: Vec<String>,
+}
 
-              return Ok(HandledEvent::handled());
-            }
+impl UserInputPrompt {
+  fn new_with_completions(completions: impl Into<Vec<String>>) -> Self {
+    Self {
+      prompt: None,
+      completions: completions.into(),
+    }
+  }
 
-            KeyCode::Char(c) => {
-              state.push_char(c);
-              return Ok(HandledEvent::handled());
-            }
+  fn is_visible(&self) -> bool {
+    self.prompt.is_some()
+  }
 
-            KeyCode::Backspace => {
-              state.pop_char();
-              return Ok(HandledEvent::handled());
-            }
+  fn show(&mut self) {
+    let prompt = InputPrompt {
+      completions: self.completions.clone(),
+      ..InputPrompt::default()
+    };
 
-            KeyCode::Left => {
-              state.move_cursor_left();
-              return Ok(HandledEvent::handled());
-            }
+    self.prompt = Some(prompt);
+  }
 
-            KeyCode::Right => {
-              state.move_cursor_right();
-              return Ok(HandledEvent::handled());
-            }
+  fn show_with_title(&mut self, title: impl Into<String>) {
+    let prompt = InputPrompt {
+      completions: self.completions.clone(),
+      title: title.into(),
+      ..InputPrompt::default()
+    };
+    self.prompt = Some(prompt);
+  }
 
-            _ => (),
+  fn hide(&mut self) {
+    self.prompt = None;
+  }
+}
+
+impl RawEventHandler for UserInputPrompt {
+  type Feedback = Option<String>;
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError> {
+    if let Some(ref mut input_prompt) = self.prompt {
+      if let crossterm::event::Event::Key(KeyEvent {
+        code,
+        kind: KeyEventKind::Press,
+        ..
+      }) = event
+      {
+        match code {
+          KeyCode::Esc => {
+            self.hide();
+            return Ok((HandledEvent::handled(), None));
           }
+
+          KeyCode::Enter => {
+            // command line is complete
+            let input = self.prompt.take().map(|prompt| prompt.as_str().to_owned());
+
+            return Ok((HandledEvent::handled(), input));
+          }
+
+          KeyCode::Char(c) => {
+            input_prompt.push_char(c);
+            return Ok((HandledEvent::handled(), None));
+          }
+
+          KeyCode::Backspace => {
+            input_prompt.pop_char();
+            return Ok((HandledEvent::handled(), None));
+          }
+
+          KeyCode::Left => {
+            input_prompt.move_cursor_left();
+            return Ok((HandledEvent::handled(), None));
+          }
+
+          KeyCode::Right => {
+            input_prompt.move_cursor_right();
+            return Ok((HandledEvent::handled(), None));
+          }
+
+          _ => (),
         }
       }
     }
 
-    Ok(HandledEvent::Unhandled(event))
+    Ok((HandledEvent::Unhandled(event), None))
   }
 }
 
-#[derive(Debug, Default)]
-pub struct CmdLineState {
+#[derive(Debug)]
+pub struct InputPrompt {
   input: String,
   cursor: usize,
+  title: String,
+  completions: Vec<String>,
 }
 
-impl CmdLineState {
-  pub fn push_char(&mut self, c: char) {
-    self.input.insert(self.cursor, c);
+impl Default for InputPrompt {
+  fn default() -> Self {
+    Self {
+      input: String::default(),
+      cursor: 0,
+      title: ":".to_owned(),
+      completions: Vec::new(),
+    }
+  }
+}
+
+impl InputPrompt {
+  fn to_byte_pos(&self, cursor: usize) -> usize {
+    self.input.chars().take(cursor).map(char::len_utf8).sum()
+  }
+
+  fn push_char(&mut self, c: char) {
+    let index = self.to_byte_pos(self.cursor);
+    self.input.insert(index, c);
     self.move_cursor_right();
   }
 
-  pub fn pop_char(&mut self) -> Option<char> {
+  fn pop_char(&mut self) -> Option<char> {
     if self.input.is_empty() || self.cursor == 0 {
       None
     } else {
-      let char = self.input.remove(self.cursor - 1);
+      let index = self.to_byte_pos(self.cursor - 1);
+      let char = self.input.remove(index);
       self.move_cursor_left();
       Some(char)
     }
   }
 
-  pub fn move_cursor_left(&mut self) {
+  fn move_cursor_left(&mut self) {
     self.cursor = self.cursor.saturating_sub(1);
   }
 
-  pub fn move_cursor_right(&mut self) {
+  fn move_cursor_right(&mut self) {
     self.cursor = self.cursor.min(self.input.len() - 1) + 1;
   }
 
-  pub fn cursor(&self) -> usize {
+  fn cursor(&self) -> usize {
     self.cursor
   }
 
-  pub fn as_str(&self) -> &str {
+  fn as_str(&self) -> &str {
     self.input.as_str()
   }
 }
 
-impl<'a> Widget for &'a CmdLineState {
+impl<'a> Widget for &'a InputPrompt {
   fn render(self, area: Rect, buf: &mut Buffer) {
     // render the prefix grey with no text; green if the function is valid and red if not
     let input_str = self.input.as_str();
-    let color = if input_str.is_empty() {
-      Color::Black
-    } else if input_str.parse::<UserCmd>().is_ok() {
+    let color = if self.completions.is_empty() {
+      Color::Blue
+    } else if self.completions.iter().any(|c| c == input_str) {
       Color::Green
     } else {
       Color::Red
     };
-    buf.set_string(area.x, area.y, ":", Style::default().fg(color));
+
+    buf.set_string(area.x, area.y, &self.title, Style::default().fg(color));
     buf.set_string(
-      area.x + 1,
+      area.x + self.title.len() as u16,
       area.y,
       &self.input,
       Style::default()
@@ -1093,10 +1186,7 @@ impl<'a> Widget for &'a CmdLineState {
   }
 }
 
-fn tree_to_tui(rect: Rect, event_sx: Sender<Event>, tree: &Tree) -> TuiTree {
-  TuiTree::new(rect, event_sx, root_node_to_tui(&tree.root()))
-}
-
+/*
 fn root_node_to_tui(node: &Node) -> TuiNode {
   let icon = Span::styled(
     node.icon(),
@@ -1132,3 +1222,4 @@ fn node_to_tui(node: &Node) -> TuiNode {
 
   TuiNode::new(icon, text, node.is_expanded(), children)
 }
+*/
