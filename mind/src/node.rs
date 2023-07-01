@@ -489,6 +489,7 @@ impl Node {
   }
 
   pub fn delete(&self, node: Node) -> Result<(), NodeError> {
+    // find the child node in order to delete it by index
     let mut inner = self.inner.write().unwrap();
     let i = inner
       .children
@@ -498,6 +499,18 @@ impl Node {
       .ok_or(NodeError::NotContainedInParent)?;
 
     let _ = inner.children.remove(i);
+
+    // removing sibling; if we have a previous, connect to next; if we have a next, connect to prev
+    let prev = node.prev();
+    let next = node.next();
+
+    if let Some(prev) = prev.as_ref() {
+      prev.inner.write().unwrap().next = next.clone();
+    }
+
+    if let Some(next) = next {
+      next.inner.write().unwrap().prev = prev;
+    }
     Ok(())
   }
 
