@@ -121,9 +121,8 @@ fn bootstrap() -> Result<(), AppError> {
       Event::Command(UserCmd::Quit { force }) => {
         if dirty && !force {
           request_sx
-            .send(Request::info_msg(
+            .send(Request::warn_msg(
               "modified tree; please save or force quit (:w + :q; :q!)",
-              Duration::from_secs(5),
             ))
             .unwrap();
         } else {
@@ -141,9 +140,7 @@ fn bootstrap() -> Result<(), AppError> {
 
         dirty = false;
 
-        request_sx
-          .send(Request::info_msg("state saved", Duration::from_secs(5)))
-          .unwrap();
+        request_sx.send(Request::info_msg("state saved")).unwrap();
       }
 
       Event::ToggleNode { id } => {
@@ -168,6 +165,19 @@ fn bootstrap() -> Result<(), AppError> {
         }
       }
 
+      Event::DeleteNode { id } => {
+        log::info!("deleting node {id}");
+        if let Some(node) = forest.main_tree().get_node_by_line(id) {
+          if let Ok(parent) = node.parent() {
+            parent.delete(node)?;
+            request_sx.send(Request::DeletedNode { id }).unwrap();
+          } else {
+            request_sx
+              .send(Request::err_msg("cannot delete root node"))
+              .unwrap();
+          }
+        }
+      }
       _ => (),
     }
   }
@@ -239,12 +249,26 @@ pub enum Event {
     mode: InsertMode,
     name: String,
   },
+
+  /// Node deletion.
+  DeleteNode { id: usize },
 }
 
 impl Event {
-  fn accept_input(&mut self, input: String) {
-    if let Event::InsertNode { name, .. } = self {
-      *name = input
+  fn accept_input(self, input: String) -> Option<Self> {
+    match self {
+      Event::InsertNode { id, mode, .. } => Some(Event::InsertNode {
+        name: input,
+        id,
+        mode,
+      }),
+
+      Event::DeleteNode { .. } => match input.as_str() {
+        "y" | "Y" => Some(self),
+        _ => None,
+      },
+
+      _ => None,
     }
   }
 }
@@ -282,6 +306,9 @@ pub enum Request {
 
   /// Ask the GUI to adapt to a node insertion.
   InsertedNode { id: usize, mode: InsertMode },
+
+  /// Ask the GUI to adapt to a node deletion.
+  DeletedNode { id: usize },
 }
 
 impl Request {
@@ -292,9 +319,19 @@ impl Request {
     }
   }
 
-  fn info_msg(msg: impl Into<String>, timeout: Duration) -> Self {
+  fn info_msg(msg: impl Into<String>) -> Self {
     let span = Span::styled(msg.into(), Style::default().fg(Color::Blue));
-    Self::sticky_msg(span, timeout)
+    Self::sticky_msg(span, Duration::from_secs(5))
+  }
+
+  fn warn_msg(msg: impl Into<String>) -> Self {
+    let span = Span::styled(msg.into(), Style::default().fg(Color::Yellow));
+    Self::sticky_msg(span, Duration::from_secs(5))
+  }
+
+  fn err_msg(msg: impl Into<String>) -> Self {
+    let span = Span::styled(msg.into(), Style::default().fg(Color::Red));
+    Self::sticky_msg(span, Duration::from_secs(5))
   }
 }
 
@@ -419,17 +456,23 @@ impl TuiTree {
     Ok(())
   }
 
-  fn select_prev_node(&mut self) {
+  fn select_prev_node(&mut self) -> bool {
     if self.cursor.visual_prev() {
       self.selected_node_id -= 1;
       self.adjust_view();
+      true
+    } else {
+      false
     }
   }
 
-  fn select_next_node(&mut self) {
+  fn select_next_node(&mut self) -> bool {
     if self.cursor.visual_next() {
       self.selected_node_id += 1;
       self.adjust_view();
+      true
+    } else {
+      false
     }
   }
 
@@ -449,6 +492,13 @@ impl TuiTree {
       id: self.selected_node_id,
       mode,
       name: String::new(),
+    });
+  }
+
+  fn open_prompt_delete_node(&mut self) {
+    self.input_prompt.show_with_title("delete node (y/N):");
+    self.input_pending_event = Some(Event::DeleteNode {
+      id: self.selected_node_id,
     });
   }
 }
@@ -492,9 +542,12 @@ impl RawEventHandler for TuiTree {
       if let (_, Some(input)) = self.input_prompt.react_raw(event)? {
         log::info!("user typed: {input}");
 
-        if let Some(mut pending_event) = self.input_pending_event.take() {
-          pending_event.accept_input(input);
-          self.emit_event(pending_event)?;
+        if let Some(event) = self
+          .input_pending_event
+          .take()
+          .and_then(|evt| evt.accept_input(input))
+        {
+          self.emit_event(event)?;
         }
       }
 
@@ -549,6 +602,13 @@ impl RawEventHandler for TuiTree {
         KeyCode::Char('I') => {
           if !self.input_prompt.is_visible() {
             self.open_prompt_insert_node("insert in/top:", InsertMode::InsideTop);
+            return Ok((HandledEvent::handled(), ()));
+          }
+        }
+
+        KeyCode::Char('d') => {
+          if !self.input_prompt.is_visible() {
+            self.open_prompt_delete_node();
             return Ok((HandledEvent::handled(), ()));
           }
         }
@@ -785,6 +845,18 @@ impl Tui {
           Request::InsertedNode { mode, .. } => {
             if let InsertMode::Before = mode {
               self.tree.selected_node_id += 1;
+            }
+          }
+
+          Request::DeletedNode { .. } => {
+            log::debug!("adapting TUI to deleted node…");
+
+            // the node doesn’t exist anymore, so we try to move to the next node, or to the previous and update the
+            // selected node ID
+            if self.tree.select_next_node() {
+              self.tree.selected_node_id -= 1;
+            } else {
+              self.tree.select_prev_node();
             }
           }
         }
