@@ -170,6 +170,7 @@ fn bootstrap() -> Result<(), AppError> {
         if let Some(node) = forest.main_tree().get_node_by_line(id) {
           if let Ok(parent) = node.parent() {
             parent.delete(node)?;
+            dirty = true;
             request_sx.send(Request::DeletedNode { id }).unwrap();
           } else {
             request_sx
