@@ -179,6 +179,22 @@ fn bootstrap() -> Result<(), AppError> {
           }
         }
       }
+
+      // HACK
+      Event::OpenNodeData { id } => {
+        if let Some(node) = forest.main_tree().get_node_by_line(id) {
+          if node.data().is_none() {
+            let (sender, rx) = channel();
+            request_sx.send(Request::PromptNodeData { sender }).unwrap();
+
+            // wait for the TUI to reply with something
+            if let Ok(resp) = rx.recv() {
+              log::info!("user wants to create {resp:?}");
+            }
+          }
+        }
+      }
+
       _ => (),
     }
   }
@@ -253,6 +269,9 @@ pub enum Event {
 
   /// Node deletion.
   DeleteNode { id: usize },
+
+  /// Node data open.
+  OpenNodeData { id: usize },
 }
 
 impl Event {
@@ -310,6 +329,12 @@ pub enum Request {
 
   /// Ask the GUI to adapt to a node deletion.
   DeletedNode { id: usize },
+
+  /// Ask the TUI to create node data (prompt the user for the menu).
+  PromptNodeData {
+    // Sender to reply with.
+    sender: Sender<Option<MenuItem>>,
+  },
 }
 
 impl Request {
@@ -450,6 +475,8 @@ impl TuiTree {
   }
 
   fn emit_event(&self, event: Event) -> Result<(), AppError> {
+    log::debug!("emitting event: {event:?}");
+
     self
       .event_sx
       .send(event)
@@ -580,38 +607,36 @@ impl RawEventHandler for TuiTree {
         }
 
         KeyCode::Char('o') => {
-          if !self.input_prompt.is_visible() {
-            self.open_prompt_insert_node("insert after:", InsertMode::After);
-            return Ok((HandledEvent::handled(), ()));
-          }
+          self.open_prompt_insert_node("insert after:", InsertMode::After);
+          return Ok((HandledEvent::handled(), ()));
         }
 
         KeyCode::Char('O') => {
-          if !self.input_prompt.is_visible() {
-            self.open_prompt_insert_node("insert before:", InsertMode::Before);
-            return Ok((HandledEvent::handled(), ()));
-          }
+          self.open_prompt_insert_node("insert before:", InsertMode::Before);
+          return Ok((HandledEvent::handled(), ()));
         }
 
         KeyCode::Char('i') => {
-          if !self.input_prompt.is_visible() {
-            self.open_prompt_insert_node("insert in/bottom:", InsertMode::InsideBottom);
-            return Ok((HandledEvent::handled(), ()));
-          }
+          self.open_prompt_insert_node("insert in/bottom:", InsertMode::InsideBottom);
+          return Ok((HandledEvent::handled(), ()));
         }
 
         KeyCode::Char('I') => {
-          if !self.input_prompt.is_visible() {
-            self.open_prompt_insert_node("insert in/top:", InsertMode::InsideTop);
-            return Ok((HandledEvent::handled(), ()));
-          }
+          self.open_prompt_insert_node("insert in/top:", InsertMode::InsideTop);
+          return Ok((HandledEvent::handled(), ()));
         }
 
         KeyCode::Char('d') => {
-          if !self.input_prompt.is_visible() {
-            self.open_prompt_delete_node();
-            return Ok((HandledEvent::handled(), ()));
-          }
+          self.open_prompt_delete_node();
+          return Ok((HandledEvent::handled(), ()));
+        }
+
+        // ask to the node; the workflow requires to first emit an event so that the logic checks whether we should
+        // open the data directly (if present), or open a menu to ask which kind of data to add
+        KeyCode::Enter => {
+          self.emit_event(Event::OpenNodeData {
+            id: self.selected_node_id,
+          })?;
         }
 
         KeyCode::Tab => {
@@ -630,7 +655,6 @@ impl RawEventHandler for TuiTree {
   }
 }
 
-// TODO: check for x boundaries?
 /// Render the node in the given area with the given indent level, and its children.
 /// Abort before rendering outside of the area (Y axis).
 fn render_with_indent(
@@ -769,6 +793,7 @@ struct Tui {
   cmd_line: CmdLine,
   tree: TuiTree,
   sticky_msg: Option<StickyMsg>,
+  menu: TuiMenu,
 }
 
 impl Tui {
@@ -789,6 +814,7 @@ impl Tui {
 
     let cmd_line = CmdLine::new(event_sx);
     let sticky_msg = None;
+    let menu = TuiMenu::default();
 
     Ok(Tui {
       terminal,
@@ -796,6 +822,7 @@ impl Tui {
       cmd_line,
       tree,
       sticky_msg,
+      menu,
     })
   }
 
@@ -860,6 +887,13 @@ impl Tui {
               self.tree.select_prev_node();
             }
           }
+
+          Request::PromptNodeData { sender } => {
+            self.open_menu(
+              [MenuItem::new("file", 'f'), MenuItem::new("url", 'u')],
+              sender,
+            );
+          }
         }
       }
 
@@ -901,6 +935,18 @@ impl Tui {
 
           // position the cursor
           f.set_cursor(size.x + 1 + prompt.cursor() as u16, y);
+        }
+
+        // render the menu if any
+        if self.menu.is_visible() {
+          let height = self.menu.height().min(size.height / 3);
+          let area = Rect {
+            x: size.x,
+            y: size.height - height,
+            width: size.width,
+            height,
+          };
+          f.render_widget(&self.menu, area);
         }
 
         // render the tree
@@ -953,6 +999,11 @@ impl Tui {
       .checked_add(timeout)
       .map(move |until| StickyMsg::new(span, until));
   }
+
+  /// Open the menu with the provided list of items and send the result on the given channel.
+  fn open_menu(&mut self, items: impl Into<Vec<MenuItem>>, sender: Sender<Option<MenuItem>>) {
+    self.menu.show(items, sender);
+  }
 }
 
 impl Drop for Tui {
@@ -975,9 +1026,10 @@ impl RawEventHandler for Tui {
     event: crossterm::event::Event,
   ) -> Result<(HandledEvent, Self::Feedback), AppError> {
     let handled = self
-      .cmd_line
+      .menu
       .react_raw(event)
       .map(|(handled, _)| handled)?
+      .and_then(&mut self.cmd_line)?
       .and_then(&mut self.tree)?;
     Ok((handled, ()))
   }
@@ -1315,7 +1367,7 @@ impl Menu {
 }
 
 impl RawEventHandler for Menu {
-  type Feedback = Option<MenuItem>;
+  type Feedback = Option<Option<MenuItem>>;
 
   fn react_raw(
     &mut self,
@@ -1342,6 +1394,20 @@ impl RawEventHandler for Menu {
         Ok((HandledEvent::handled(), None))
       }
 
+      // return the selected item on return
+      crossterm::event::Event::Key(KeyEvent {
+        code: KeyCode::Enter,
+        ..
+      }) => {
+        let item = self.items.get(self.currently_selected).cloned();
+        Ok((HandledEvent::handled(), Some(item)))
+      }
+
+      // cancel
+      crossterm::event::Event::Key(KeyEvent {
+        code: KeyCode::Esc, ..
+      }) => Ok((HandledEvent::handled(), Some(None))),
+
       // select item directly by pressing a key
       crossterm::event::Event::Key(KeyEvent {
         code: KeyCode::Char(c),
@@ -1354,7 +1420,7 @@ impl RawEventHandler for Menu {
           .find(|(_, item)| item.key == Some(c))
         {
           self.currently_selected = i;
-          return Ok((HandledEvent::handled(), Some(item.clone())));
+          return Ok((HandledEvent::handled(), Some(Some(item.clone()))));
         }
 
         Ok((HandledEvent::Unhandled(event), None))
@@ -1424,6 +1490,60 @@ where
     MenuItem {
       name: value.into(),
       key: None,
+    }
+  }
+}
+
+#[derive(Debug, Default)]
+struct TuiMenu {
+  menu: Option<(Menu, Sender<Option<MenuItem>>)>,
+}
+
+impl TuiMenu {
+  fn show(&mut self, items: impl Into<Vec<MenuItem>>, sender: Sender<Option<MenuItem>>) {
+    let menu = Menu::new(items);
+    self.menu = Some((menu, sender));
+  }
+
+  fn is_visible(&self) -> bool {
+    self.menu.is_some()
+  }
+
+  fn height(&self) -> u16 {
+    self
+      .menu
+      .as_ref()
+      .map(|(menu, _)| menu.items.len())
+      .unwrap_or_default() as _
+  }
+}
+
+impl<'a> Widget for &'a TuiMenu {
+  fn render(self, area: Rect, buf: &mut Buffer) {
+    if let Some((ref menu, _)) = self.menu {
+      menu.render(area, buf);
+    }
+  }
+}
+
+impl RawEventHandler for TuiMenu {
+  type Feedback = ();
+
+  fn react_raw(
+    &mut self,
+    event: crossterm::event::Event,
+  ) -> Result<(HandledEvent, Self::Feedback), AppError> {
+    if let Some((menu, sender)) = &mut self.menu {
+      let (_, selected) = menu.react_raw(event)?;
+
+      if let Some(selected) = selected {
+        sender.send(selected).unwrap();
+        self.menu = None;
+      }
+
+      Ok((HandledEvent::handled(), ()))
+    } else {
+      Ok((HandledEvent::Unhandled(event), ()))
     }
   }
 }
