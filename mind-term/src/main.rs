@@ -1,12 +1,11 @@
 mod cli;
-mod data_file;
 mod ui;
 
 use clap::Parser;
 use cli::{Cli, Command, CommonArgs, DataArgs, InsertMode};
 use colored::Colorize;
-use data_file::{DataFileStore, DataFileStoreError};
 use mind_tree::config::Config;
+use mind_tree::data_file::{DataFileStore, DataFileStoreError};
 use mind_tree::forest::{Forest, ForestError};
 use mind_tree::node::{path_iter, Node, NodeData, NodeError, NodeFilter};
 use mind_tree::{encoding, node::Tree};

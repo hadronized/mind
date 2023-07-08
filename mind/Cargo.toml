@@ -11,6 +11,7 @@ edition = "2021"
 rust-version = "1.66.0"
 
 [dependencies]
+chrono = "0.4.26"
 dirs = "5.0.0"
 log = "0.4.19"
 serde = { version = "1", features = ["derive"] }
