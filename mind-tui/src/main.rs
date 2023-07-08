@@ -18,7 +18,7 @@ use std::{
   process::exit,
   str::FromStr,
   sync::mpsc::{channel, Receiver, SendError, Sender},
-  thread,
+  thread::{self, JoinHandle},
   time::{Duration, Instant},
 };
 use thiserror::Error;
@@ -61,149 +61,186 @@ fn main() {
   }
 }
 
-fn bootstrap() -> Result<(), AppError> {
-  let cli = Cli::parse();
+#[derive(Debug)]
+struct App {
+  config: Config,
+  event_rx: Receiver<Event>,
+  request_sx: Sender<Request>,
+  forest: Forest,
+  tui_handle: JoinHandle<()>,
+  dirty: bool,
+}
 
-  if let Some(ref log_file) = cli.log_file {
-    WriteLogger::init(
-      cli.verbosity(),
-      simplelog::ConfigBuilder::new()
-        .set_time_format_rfc3339()
-        .build(),
-      File::create(log_file).map_err(|err| AppError::LogFileError {
-        err,
-        path: log_file.to_owned(),
-      })?,
-    )?;
+impl App {
+  fn init() -> Result<Self, AppError> {
+    let cli = Cli::parse();
 
-    log::info!("logger initialized and writing at {}", log_file.display());
-  }
+    if let Some(ref log_file) = cli.log_file {
+      WriteLogger::init(
+        cli.verbosity(),
+        simplelog::ConfigBuilder::new()
+          .set_time_format_rfc3339()
+          .build(),
+        File::create(log_file).map_err(|err| AppError::LogFileError {
+          err,
+          path: log_file.to_owned(),
+        })?,
+      )?;
 
-  let (config, config_err) = Config::load_or_default();
-
-  let (event_sx, event_rx) = channel();
-  let (request_sx, request_rx) = channel();
-
-  // TODO: read CLI arguments to determine which tree to show; we start with the main forest for now
-  let forest = Forest::from_path(
-    config
-      .persistence
-      .forest_path()
-      .ok_or(AppError::NoForestPath)?,
-  )?;
-  let main_tree = TuiTree::new(Rect::default(), event_sx.clone(), forest.main_tree().root());
-
-  // spawn a thread for the TUI; we can send requests to it and it sends events back to us
-  let tui_thread = thread::spawn(move || {
-    let tui = Tui::new(main_tree, event_sx, request_rx).expect("TUI creation");
-    if let Err(err) = tui.run() {
-      log::error!("TUI exited with error: {}", err);
-      exit(1);
+      log::info!("logger initialized and writing at {}", log_file.display());
     }
-  });
 
-  if let Some(config_err) = config_err {
-    request_sx
-      .send(Request::sticky_msg(
-        format!("error while reading configuration: {}", config_err),
-        Duration::from_secs(5),
-      ))
-      .map_err(AppError::Request)?;
+    let (config, config_err) = Config::load_or_default();
+
+    let (event_sx, event_rx) = channel();
+    let (request_sx, request_rx) = channel();
+
+    // TODO: read CLI arguments to determine which tree to show; we start with the main forest for now
+    let forest = Forest::from_path(
+      config
+        .persistence
+        .forest_path()
+        .ok_or(AppError::NoForestPath)?,
+    )?;
+    let main_tree = TuiTree::new(Rect::default(), event_sx.clone(), forest.main_tree().root());
+
+    // spawn a thread for the TUI; we can send requests to it and it sends events back to us
+    let tui_handle = thread::spawn(move || {
+      let tui = Tui::new(main_tree, event_sx, request_rx).expect("TUI creation");
+      if let Err(err) = tui.run() {
+        log::error!("TUI exited with error: {}", err);
+        exit(1);
+      }
+    });
+
+    if let Some(config_err) = config_err {
+      request_sx
+        .send(Request::sticky_msg(
+          format!("error while reading configuration: {}", config_err),
+          Duration::from_secs(5),
+        ))
+        .map_err(AppError::Request)?;
+    }
+
+    // boolean representing when the tree has been modified and requires saving before quitting
+    let dirty = false;
+
+    Ok(Self {
+      config,
+      event_rx,
+      request_sx,
+      forest,
+      tui_handle,
+      dirty,
+    })
   }
 
-  // boolean representing when the tree has been modified and requires saving before quitting
-  let mut dirty = false;
-
-  // TODO: we need a dispatcher with an indirection here so that we don’t break the loop on bad events
-  // main loop of our logic application
-  while let Ok(event) = event_rx.recv() {
-    match event {
-      Event::Command(UserCmd::Quit { force }) => {
-        if dirty && !force {
-          request_sx
-            .send(Request::warn_msg(
-              "modified tree; please save or force quit (:w + :q; :q!)",
-            ))
-            .unwrap();
-        } else {
-          request_sx.send(Request::Quit).unwrap();
-        }
-      }
-
-      Event::Command(UserCmd::Save) => {
-        forest.persist(
-          config
-            .persistence
-            .forest_path()
-            .ok_or(AppError::NoForestPath)?,
-        )?;
-
-        dirty = false;
-
-        request_sx.send(Request::info_msg("state saved")).unwrap();
-      }
-
-      Event::ToggleNode { id } => {
-        if let Some(node) = forest.main_tree().get_node_by_line(id) {
-          node.toggle_expand();
-        }
-      }
-
-      Event::InsertNode { id, mode, name } => {
-        log::info!("inserting node {id} {name}: {mode:?}");
-        if let Some(anchor) = forest.main_tree().get_node_by_line(id) {
-          let node = Node::new(name, "");
-          match mode {
-            InsertMode::InsideTop => anchor.insert_top(node),
-            InsertMode::InsideBottom => anchor.insert_bottom(node),
-            InsertMode::Before => anchor.insert_before(node)?,
-            InsertMode::After => anchor.insert_after(node)?,
-          }
-
-          dirty = true;
-          request_sx.send(Request::InsertedNode { id, mode }).unwrap();
-        }
-      }
-
-      Event::DeleteNode { id } => {
-        log::info!("deleting node {id}");
-        if let Some(node) = forest.main_tree().get_node_by_line(id) {
-          if let Ok(parent) = node.parent() {
-            parent.delete(node)?;
-            dirty = true;
-            request_sx.send(Request::DeletedNode { id }).unwrap();
+  /// Dispatch incoming events from the TUI.
+  fn dispatch_events(mut self) -> Result<(), AppError> {
+    // main loop of our logic application
+    while let Ok(event) = self.event_rx.recv() {
+      match event {
+        Event::Command(UserCmd::Quit { force }) => {
+          if self.dirty && !force {
+            self
+              .request_sx
+              .send(Request::warn_msg(
+                "modified tree; please save or force quit (:w + :q; :q!)",
+              ))
+              .unwrap();
           } else {
-            request_sx
-              .send(Request::err_msg("cannot delete root node"))
+            self.request_sx.send(Request::Quit).unwrap();
+          }
+        }
+
+        Event::Command(UserCmd::Save) => {
+          self.forest.persist(
+            self
+              .config
+              .persistence
+              .forest_path()
+              .ok_or(AppError::NoForestPath)?,
+          )?;
+
+          self.dirty = false;
+          self
+            .request_sx
+            .send(Request::info_msg("state saved"))
+            .unwrap();
+        }
+
+        Event::ToggleNode { id } => {
+          if let Some(node) = self.forest.main_tree().get_node_by_line(id) {
+            node.toggle_expand();
+          }
+        }
+
+        Event::InsertNode { id, mode, name } => {
+          log::info!("inserting node {id} {name}: {mode:?}");
+          if let Some(anchor) = self.forest.main_tree().get_node_by_line(id) {
+            let node = Node::new(name, "");
+            match mode {
+              InsertMode::InsideTop => anchor.insert_top(node),
+              InsertMode::InsideBottom => anchor.insert_bottom(node),
+              InsertMode::Before => anchor.insert_before(node)?,
+              InsertMode::After => anchor.insert_after(node)?,
+            }
+
+            self.dirty = true;
+            self
+              .request_sx
+              .send(Request::InsertedNode { id, mode })
               .unwrap();
           }
         }
-      }
 
-      // HACK
-      Event::OpenNodeData { id } => {
-        if let Some(node) = forest.main_tree().get_node_by_line(id) {
-          if node.data().is_none() {
-            let (sender, rx) = channel();
-            request_sx.send(Request::PromptNodeData { sender }).unwrap();
-
-            // wait for the TUI to reply with something
-            if let Ok(resp) = rx.recv() {
-              log::info!("user wants to create {resp:?}");
+        Event::DeleteNode { id } => {
+          log::info!("deleting node {id}");
+          if let Some(node) = self.forest.main_tree().get_node_by_line(id) {
+            if let Ok(parent) = node.parent() {
+              parent.delete(node)?;
+              self.request_sx.send(Request::DeletedNode { id }).unwrap();
+            } else {
+              self
+                .request_sx
+                .send(Request::err_msg("cannot delete root node"))
+                .unwrap();
             }
           }
         }
+
+        Event::OpenNodeData { id } => {
+          if let Some(node) = self.forest.main_tree().get_node_by_line(id) {
+            if node.data().is_none() {
+              let (sender, rx) = channel();
+              self
+                .request_sx
+                .send(Request::PromptNodeData { sender })
+                .unwrap();
+
+              // wait for the TUI to reply with something
+              if let Ok(resp) = rx.recv() {
+                log::info!("user wants to create {resp:?}");
+              }
+            }
+          }
+        }
+
+        _ => (),
       }
-
-      _ => (),
     }
-  }
 
-  if let Err(err) = tui_thread.join() {
-    log::error!("TUI killed while waiting for it: {:?}", err);
-  }
+    if let Err(err) = self.tui_handle.join() {
+      log::error!("TUI killed while waiting for it: {:?}", err);
+    }
 
-  Ok(())
+    Ok(())
+  }
+}
+
+fn bootstrap() -> Result<(), AppError> {
+  let app = App::init()?;
+  app.dispatch_events()
 }
 
 #[derive(Debug, Error)]
@@ -694,6 +731,8 @@ fn render_with_indent(
       render_x += arrow.width() as u16;
     }
 
+    let start_x = render_x;
+
     // icon rendering
     let icon = Span::styled(node.icon(), Style::default().fg(Color::Green));
     buf.set_string(render_x, area.y, &icon.content, icon.style);
@@ -716,8 +755,10 @@ fn render_with_indent(
 
     if cursor.points_to(node) {
       buf.set_style(
-        Rect::new(0, area.y, area.width, 1),
-        Style::default().bg(Color::Black),
+        Rect::new(start_x, area.y, area.width - start_x, 1),
+        Style::default()
+          .bg(Color::Black)
+          .add_modifier(Modifier::DIM),
       );
     }
   }
