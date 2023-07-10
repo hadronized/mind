@@ -322,9 +322,7 @@ pub fn render_with_indent(
       area.x,
       area.y,
       &indent_guides,
-      Style::default()
-        .fg(Color::Black)
-        .add_modifier(Modifier::DIM),
+      Style::default().fg(Color::Black),
     );
 
     let mut render_x = indent_guides.chars().count() as u16;
@@ -332,12 +330,7 @@ pub fn render_with_indent(
     // arrow (expanded / collapsed) for nodes with children
     if node.has_children() {
       let arrow = if node.is_expanded() { " " } else { " " };
-      let arrow = Span::styled(
-        arrow,
-        Style::default()
-          .fg(Color::Black)
-          .add_modifier(Modifier::DIM),
-      );
+      let arrow = Span::styled(arrow, Style::default().fg(Color::Black));
       buf.set_string(render_x, area.y, &arrow.content, arrow.style);
       render_x += arrow.width() as u16;
     }
@@ -367,9 +360,7 @@ pub fn render_with_indent(
     if cursor.points_to(node) {
       buf.set_style(
         Rect::new(start_x, area.y, area.width - start_x, 1),
-        Style::default()
-          .bg(Color::Black)
-          .add_modifier(Modifier::DIM),
+        Style::default().bg(Color::Black),
       );
     }
   }

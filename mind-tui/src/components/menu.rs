@@ -160,7 +160,7 @@ impl<'a> Widget for &'a Menu {
           },
           Style::default()
             .bg(Color::Black)
-            .add_modifier(Modifier::DIM),
+            .add_modifier(Modifier::BOLD),
         );
       }
     }
