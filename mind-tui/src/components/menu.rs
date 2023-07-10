@@ -19,13 +19,15 @@ use crate::{
 /// aborted.
 #[derive(Debug, Default)]
 pub struct Menu {
+  title: String,
   items: Vec<MenuItem>,
   currently_selected: usize, // index in items
 }
 
 impl Menu {
-  pub fn new(items: impl Into<Vec<MenuItem>>) -> Self {
+  pub fn new(title: impl Into<String>, items: impl Into<Vec<MenuItem>>) -> Self {
     Self {
+      title: title.into(),
       items: items.into(),
       currently_selected: 0,
     }
@@ -113,9 +115,15 @@ impl RawEventHandler for Menu {
 }
 
 impl<'a> Widget for &'a Menu {
-  fn render(self, area: Rect, buf: &mut Buffer) {
-    // center on area.width based on the longest item
-    //let longest_width = self.items.iter().map(|item| item.name.len()).max();
+  fn render(self, mut area: Rect, buf: &mut Buffer) {
+    // render the title and increment the area to render the items below
+    buf.set_string(
+      area.x,
+      area.y,
+      &self.title,
+      Style::default().fg(Color::Blue),
+    );
+    area.y += 1;
 
     for (i, item) in self.items.iter().enumerate() {
       let mut x = area.x;
@@ -123,12 +131,24 @@ impl<'a> Widget for &'a Menu {
       // if there is a key set, print it first and shift x by the length
       if let Some(key) = item.key {
         let s = format!("({key}) ");
-        buf.set_string(x, area.y + i as u16, &s, Style::default());
+        buf.set_string(
+          x,
+          area.y + i as u16,
+          &s,
+          Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::ITALIC),
+        );
         x += s.len() as u16;
       }
 
       // then just render the actual menu item
-      buf.set_string(x, area.y + i as u16, &item.name, Style::default());
+      buf.set_string(
+        x,
+        area.y + i as u16,
+        &item.name,
+        Style::default().fg(Color::Magenta),
+      );
 
       // highlight if selected
       if i == self.currently_selected {
@@ -181,8 +201,13 @@ pub struct TuiMenu {
 }
 
 impl TuiMenu {
-  pub fn show(&mut self, items: impl Into<Vec<MenuItem>>, sender: Sender<Option<MenuItem>>) {
-    let menu = Menu::new(items);
+  pub fn show(
+    &mut self,
+    title: impl Into<String>,
+    items: impl Into<Vec<MenuItem>>,
+    sender: Sender<Option<MenuItem>>,
+  ) {
+    let menu = Menu::new(title, items);
     self.menu = Some((menu, sender));
   }
 
@@ -195,7 +220,8 @@ impl TuiMenu {
       .menu
       .as_ref()
       .map(|(menu, _)| menu.items.len())
-      .unwrap_or_default() as _
+      .unwrap_or_default() as u16
+      + 1 // +1 for the title
   }
 }
 

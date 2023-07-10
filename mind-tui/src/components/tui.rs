@@ -135,6 +135,7 @@ impl Tui {
 
           Request::PromptNodeData { sender } => {
             self.open_menu(
+              "create data",
               [MenuItem::new("file", 'f'), MenuItem::new("url", 'u')],
               sender,
             );
@@ -247,8 +248,13 @@ impl Tui {
   }
 
   /// Open the menu with the provided list of items and send the result on the given channel.
-  fn open_menu(&mut self, items: impl Into<Vec<MenuItem>>, sender: Sender<Option<MenuItem>>) {
-    self.menu.show(items, sender);
+  fn open_menu(
+    &mut self,
+    title: impl Into<String>,
+    items: impl Into<Vec<MenuItem>>,
+    sender: Sender<Option<MenuItem>>,
+  ) {
+    self.menu.show(title, items, sender);
   }
 }
 
