@@ -8,15 +8,25 @@ mod req;
 use clap::Parser;
 use cli::Cli;
 use components::{tree::TuiTree, tui::Tui};
+use crossterm::{
+  execute,
+  terminal::{EnterAlternateScreen, LeaveAlternateScreen},
+};
 use error::AppError;
 use event::Event;
-use mind_tree::{config::Config, forest::Forest, node::Node};
+use mind_tree::{
+  config::Config,
+  forest::Forest,
+  node::{Node, NodeData},
+};
 use ops::InsertMode;
 use req::{Request, UserCmd};
 use simplelog::WriteLogger;
 use std::{
   fs::File,
-  process::exit,
+  io::stdout,
+  path::Path,
+  process::{exit, Command, Stdio},
   sync::mpsc::{channel, Receiver, Sender},
   thread::{self, JoinHandle},
   time::Duration,
@@ -234,15 +244,72 @@ impl App {
 
   fn on_open_node_data(&mut self, id: usize) -> Result<(), AppError> {
     if let Some(node) = self.forest.main_tree().get_node_by_line(id) {
-      if node.data().is_none() {
-        let (sender, rx) = channel();
-        self.request(Request::PromptNodeData { sender })?;
-
-        // wait for the TUI to reply with something
-        if let Ok(resp) = rx.recv() {
-          log::info!("user wants to create {resp:?}");
-        }
+      match node.data() {
+        Some(data) => self.open_node_data(&data)?,
+        None => self.request_prompt_node_data()?,
       }
+    }
+
+    Ok(())
+  }
+
+  fn open_node_data(&mut self, data: &NodeData) -> Result<(), AppError> {
+    match data {
+      NodeData::File(path) => self.open_node_file(path),
+      NodeData::Link(url) => self.open_node_link(url),
+    }
+  }
+
+  fn open_node_file(&self, path: &Path) -> Result<(), AppError> {
+    log::info!("opening node path {}", path.display());
+
+    // get the editor to use to open the file
+    let editor = self
+      .config
+      .ui
+      .editor
+      .as_ref()
+      .cloned()
+      .or_else(|| std::env::var("EDITOR").ok())
+      .ok_or_else(|| AppError::NodePathOpenError {
+        path: path.to_owned(),
+        err: "no editor configured".to_owned(),
+      })?;
+
+    log::debug!("with editor {editor}");
+
+    // TODO: we must leave raw mode here; careful to the fact this function might fail
+    let mut stdout = stdout();
+    execute!(stdout, LeaveAlternateScreen).map_err(AppError::TerminalAction)?;
+    let res = Command::new(editor)
+      .arg(path)
+      .status()
+      .map_err(|err| AppError::NodePathOpenError {
+        path: path.to_owned(),
+        err: format!("error while opening editor: {}", err),
+      });
+    execute!(stdout, EnterAlternateScreen).map_err(AppError::TerminalAction)?;
+    let _ = res?;
+
+    Ok(())
+  }
+
+  fn open_node_link(&self, url: &str) -> Result<(), AppError> {
+    log::info!("opening URL {url}");
+
+    open::that(url).map_err(|err| AppError::URLOpenError {
+      url: url.to_owned(),
+      err: err.to_string(),
+    })
+  }
+
+  fn request_prompt_node_data(&mut self) -> Result<(), AppError> {
+    let (sender, rx) = channel();
+    self.request(Request::PromptNodeData { sender })?;
+
+    // wait for the TUI to reply with something
+    if let Ok(resp) = rx.recv() {
+      log::info!("user wants to create {resp:?}");
     }
 
     Ok(())

@@ -92,6 +92,8 @@ impl Tui {
 
       if available_event {
         let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
+        log::trace!("TUI event: {event:#?}");
+
         let handled_event = self.react_raw(event).map(|(handled, _)| handled);
 
         self.display_errors(handled_event, |event| {

@@ -45,4 +45,10 @@ pub enum AppError {
 
   #[error("node error: {0}")]
   NodeError(#[from] NodeError),
+
+  #[error("cannot open URL {url}: {err}")]
+  URLOpenError { url: String, err: String },
+
+  #[error("cannot open node path {path}: {err}")]
+  NodePathOpenError { path: PathBuf, err: String },
 }
