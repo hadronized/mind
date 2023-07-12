@@ -8,10 +8,6 @@ mod req;
 use clap::Parser;
 use cli::Cli;
 use components::{tree::TuiTree, tui::Tui};
-use crossterm::{
-  execute,
-  terminal::{EnterAlternateScreen, LeaveAlternateScreen},
-};
 use error::AppError;
 use event::Event;
 use mind_tree::{
@@ -24,9 +20,8 @@ use req::{Request, UserCmd};
 use simplelog::WriteLogger;
 use std::{
   fs::File,
-  io::stdout,
   path::Path,
-  process::{exit, Command, Stdio},
+  process::exit,
   sync::mpsc::{channel, Receiver, Sender},
   thread::{self, JoinHandle},
   time::Duration,
@@ -98,7 +93,7 @@ impl App {
     )?;
     let main_tree = TuiTree::new(Rect::default(), event_sx.clone(), forest.main_tree().root());
 
-    let tui_data = Self::spawn_tui(main_tree, event_sx, event_rx)?;
+    let tui_data = Self::spawn_tui(&config, main_tree, event_sx, event_rx)?;
 
     if let Some(config_err) = config_err {
       tui_data
@@ -125,14 +120,16 @@ impl App {
   ///
   /// `event_sx` and `event_rx` are both ends of a channel used to communicate between the TUI and the calling code.
   fn spawn_tui(
+    config: &Config,
     tree: TuiTree,
     event_sx: Sender<Event>,
     event_rx: Receiver<Event>,
   ) -> Result<TuiData, AppError> {
     let (request_sx, request_rx) = channel();
+    let config = config.clone();
 
     let tui_handle = thread::spawn(move || {
-      let tui = Tui::new(tree, event_sx, request_rx).expect("TUI creation");
+      let tui = Tui::new(&config, tree, event_sx, request_rx).expect("TUI creation");
       if let Err(err) = tui.run() {
         log::error!("TUI exited with error: {}", err);
         exit(1);
@@ -263,35 +260,9 @@ impl App {
   fn open_node_file(&self, path: &Path) -> Result<(), AppError> {
     log::info!("opening node path {}", path.display());
 
-    // get the editor to use to open the file
-    let editor = self
-      .config
-      .ui
-      .editor
-      .as_ref()
-      .cloned()
-      .or_else(|| std::env::var("EDITOR").ok())
-      .ok_or_else(|| AppError::NodePathOpenError {
-        path: path.to_owned(),
-        err: "no editor configured".to_owned(),
-      })?;
-
-    log::debug!("with editor {editor}");
-
-    // TODO: we must leave raw mode here; careful to the fact this function might fail
-    let mut stdout = stdout();
-    execute!(stdout, LeaveAlternateScreen).map_err(AppError::TerminalAction)?;
-    let res = Command::new(editor)
-      .arg(path)
-      .status()
-      .map_err(|err| AppError::NodePathOpenError {
-        path: path.to_owned(),
-        err: format!("error while opening editor: {}", err),
-      });
-    execute!(stdout, EnterAlternateScreen).map_err(AppError::TerminalAction)?;
-    let _ = res?;
-
-    Ok(())
+    self.request(Request::OpenEditor {
+      path: path.to_owned(),
+    })
   }
 
   fn open_node_link(&self, url: &str) -> Result<(), AppError> {

@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::mpsc::Sender, time::Duration};
+use std::{path::PathBuf, str::FromStr, sync::mpsc::Sender, time::Duration};
 
 use tui::{
   style::{Color, Style},
@@ -37,6 +37,9 @@ pub enum Request {
     // Sender to reply with.
     sender: Sender<Option<MenuItem>>,
   },
+
+  /// Ask the TUI to open the editor with on the given path.
+  OpenEditor { path: PathBuf },
 }
 
 impl Request {

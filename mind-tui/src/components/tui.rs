@@ -8,6 +8,7 @@ use crossterm::{
   execute,
   terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use mind_tree::config::Config;
 use tui::{
   backend::CrosstermBackend,
   layout::Rect,
@@ -25,6 +26,7 @@ use crate::{
 
 use super::{
   cmd_line::CmdLine,
+  editor::Editor,
   menu::{MenuItem, TuiMenu},
   sticky_msg::StickyMsg,
   tree::TuiTree,
@@ -39,10 +41,12 @@ pub struct Tui {
   tree: TuiTree,
   sticky_msg: Option<StickyMsg>,
   menu: TuiMenu,
+  editor: Editor,
 }
 
 impl Tui {
   pub fn new(
+    config: &Config,
     mut tree: TuiTree,
     event_sx: Sender<Event>,
     request_rx: Receiver<Request>,
@@ -60,6 +64,7 @@ impl Tui {
     let cmd_line = CmdLine::new(event_sx);
     let sticky_msg = None;
     let menu = TuiMenu::default();
+    let editor = Editor::new(config)?;
 
     Ok(Tui {
       terminal,
@@ -68,6 +73,7 @@ impl Tui {
       tree,
       sticky_msg,
       menu,
+      editor,
     })
   }
 
@@ -142,13 +148,19 @@ impl Tui {
               sender,
             );
           }
+
+          Request::OpenEditor { path } => {
+            self.editor.edit(&path)?;
+            self.terminal.clear().map_err(AppError::TerminalAction)?;
+          }
         }
+
+        needs_redraw = true;
       }
 
       self.refresh();
 
       // render
-      needs_redraw = true;
       if needs_redraw {
         self.render()?;
         needs_redraw = false;

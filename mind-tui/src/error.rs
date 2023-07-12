@@ -51,4 +51,7 @@ pub enum AppError {
 
   #[error("cannot open node path {path}: {err}")]
   NodePathOpenError { path: PathBuf, err: String },
+
+  #[error("cannot configure editor: {err}")]
+  EditorConfig { err: String },
 }
