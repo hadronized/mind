@@ -172,7 +172,8 @@ impl Tui {
       .draw(|f| {
         let size = f.size();
 
-        // when the command line is active, this value contains -1 so that we do not overlap on the command line
+        // when some widgets are active, this value is negative so that we do not overlap with the widgets active at
+        // the bottom of the screen
         let mut tree_height_bias = 0;
 
         // render the command line, if any
@@ -204,7 +205,10 @@ impl Tui {
             width: size.width,
             height,
           };
+
           f.render_widget(&self.menu, area);
+
+          tree_height_bias = height;
         }
 
         // render the tree
