@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::mpsc::SendError};
 
-use mind_tree::{forest::ForestError, node::NodeError};
+use mind_tree::{data_file::DataFileStoreError, forest::ForestError, node::NodeError};
 use thiserror::Error;
 
 use crate::req::Request;
@@ -37,6 +37,9 @@ pub enum AppError {
   #[error("unknown '{0}' command")]
   UnknownCommand(String),
 
+  #[error("no data directory available")]
+  NoDataDir,
+
   #[error("no forest path")]
   NoForestPath,
 
@@ -54,4 +57,10 @@ pub enum AppError {
 
   #[error("cannot configure editor: {err}")]
   EditorConfig { err: String },
+
+  #[error("error while creating data file: {err}")]
+  DataFileStoreError {
+    #[from]
+    err: DataFileStoreError,
+  },
 }

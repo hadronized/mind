@@ -1,3 +1,5 @@
+use std::sync::mpsc::Sender;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use tui::{
   buffer::Buffer,
@@ -14,7 +16,7 @@ use crate::{
 /// Component displaying an input prompt to ask data from the user.
 #[derive(Debug, Default)]
 pub struct UserInputPrompt {
-  prompt: Option<InputPrompt>,
+  prompt: Option<(InputPrompt, Sender<Option<String>>)>,
   completions: Vec<String>,
 }
 
@@ -30,41 +32,37 @@ impl UserInputPrompt {
     self.prompt.is_some()
   }
 
-  pub fn show(&mut self) {
+  pub fn show(&mut self, sender: Sender<Option<String>>) {
     let prompt = InputPrompt {
       completions: self.completions.clone(),
       ..InputPrompt::default()
     };
 
-    self.prompt = Some(prompt);
+    self.prompt = Some((prompt, sender));
   }
 
-  pub fn show_with_title(&mut self, title: impl Into<String>) {
+  pub fn show_with_title(&mut self, title: impl Into<String>, sender: Sender<Option<String>>) {
     let prompt = InputPrompt {
       completions: self.completions.clone(),
       title: title.into(),
       ..InputPrompt::default()
     };
-    self.prompt = Some(prompt);
-  }
-
-  fn hide(&mut self) {
-    self.prompt = None;
+    self.prompt = Some((prompt, sender));
   }
 
   pub fn prompt(&self) -> Option<&InputPrompt> {
-    self.prompt.as_ref()
+    self.prompt.as_ref().map(|(prompt, _)| prompt)
   }
 }
 
 impl RawEventHandler for UserInputPrompt {
-  type Feedback = Option<String>;
+  type Feedback = ();
 
   fn react_raw(
     &mut self,
     event: crossterm::event::Event,
   ) -> Result<(HandledEvent, Self::Feedback), AppError> {
-    if let Some(ref mut input_prompt) = self.prompt {
+    if let Some((ref mut input_prompt, _)) = self.prompt {
       if let crossterm::event::Event::Key(KeyEvent {
         code,
         kind: KeyEventKind::Press,
@@ -73,35 +71,41 @@ impl RawEventHandler for UserInputPrompt {
       {
         match code {
           KeyCode::Esc => {
-            self.hide();
-            return Ok((HandledEvent::handled(), None));
+            if let Some((_, sender)) = self.prompt.take() {
+              sender.send(None).unwrap();
+            }
+
+            return Ok((HandledEvent::handled(), ()));
           }
 
           KeyCode::Enter => {
             // command line is complete
-            let input = self.prompt.take().map(|prompt| prompt.as_str().to_owned());
+            if let Some((prompt, sender)) = self.prompt.take() {
+              let input = prompt.as_str().to_owned();
+              sender.send(Some(input)).unwrap();
+            }
 
-            return Ok((HandledEvent::handled(), input));
+            return Ok((HandledEvent::handled(), ()));
           }
 
           KeyCode::Char(c) => {
             input_prompt.push_char(c);
-            return Ok((HandledEvent::handled(), None));
+            return Ok((HandledEvent::handled(), ()));
           }
 
           KeyCode::Backspace => {
             input_prompt.pop_char();
-            return Ok((HandledEvent::handled(), None));
+            return Ok((HandledEvent::handled(), ()));
           }
 
           KeyCode::Left => {
             input_prompt.move_cursor_left();
-            return Ok((HandledEvent::handled(), None));
+            return Ok((HandledEvent::handled(), ()));
           }
 
           KeyCode::Right => {
             input_prompt.move_cursor_right();
-            return Ok((HandledEvent::handled(), None));
+            return Ok((HandledEvent::handled(), ()));
           }
 
           _ => (),
@@ -109,7 +113,7 @@ impl RawEventHandler for UserInputPrompt {
       }
     }
 
-    Ok((HandledEvent::Unhandled(event), None))
+    Ok((HandledEvent::Unhandled(event), ()))
   }
 }
 

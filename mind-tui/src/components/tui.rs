@@ -30,6 +30,7 @@ use super::{
   menu::{MenuItem, TuiMenu},
   sticky_msg::StickyMsg,
   tree::TuiTree,
+  user_input::UserInputPrompt,
 };
 
 pub struct Tui {
@@ -41,6 +42,7 @@ pub struct Tui {
   tree: TuiTree,
   sticky_msg: Option<StickyMsg>,
   menu: TuiMenu,
+  prompt: UserInputPrompt,
   editor: Editor,
 }
 
@@ -64,6 +66,7 @@ impl Tui {
     let cmd_line = CmdLine::new(event_sx);
     let sticky_msg = None;
     let menu = TuiMenu::default();
+    let prompt = UserInputPrompt::default();
     let editor = Editor::new(config)?;
 
     Ok(Tui {
@@ -73,6 +76,7 @@ impl Tui {
       tree,
       sticky_msg,
       menu,
+      prompt,
       editor,
     })
   }
@@ -147,6 +151,8 @@ impl Tui {
             );
           }
 
+          Request::UserInput { title, sender } => self.open_prompt(title, sender),
+
           Request::OpenEditor { path } => {
             self.editor.edit(&path)?;
             self.terminal.clear().map_err(AppError::TerminalAction)?;
@@ -178,9 +184,8 @@ impl Tui {
 
         // render the command line, if any
         if let Some(prompt) = self.cmd_line.prompt() {
-          tree_height_bias = 1;
-
           let y = size.height - 1;
+          tree_height_bias = 1;
 
           // render the line
           f.render_widget(
@@ -209,6 +214,21 @@ impl Tui {
           f.render_widget(&self.menu, area);
 
           tree_height_bias = height;
+        }
+
+        // render the prompt, if any
+        if let Some(prompt) = self.prompt.prompt() {
+          let y = size.height - 1;
+          tree_height_bias = 1;
+
+          f.render_widget(
+            prompt,
+            Rect {
+              y,
+              height: 1,
+              ..size
+            },
+          );
         }
 
         // render the tree
@@ -263,6 +283,11 @@ impl Tui {
       .map(move |until| StickyMsg::new(span, until));
   }
 
+  /// Open the prompt with the provided title and send the result on the given channel.
+  fn open_prompt(&mut self, title: impl Into<String>, sender: Sender<Option<String>>) {
+    self.prompt.show_with_title(title, sender);
+  }
+
   /// Open the menu with the provided list of items and send the result on the given channel.
   fn open_menu(
     &mut self,
@@ -297,6 +322,7 @@ impl RawEventHandler for Tui {
       .menu
       .react_raw(event)
       .map(|(handled, _)| handled)?
+      .and_then(&mut self.prompt)?
       .and_then(&mut self.cmd_line)?
       .and_then(&mut self.tree)?;
     Ok((handled, ()))

@@ -12,6 +12,7 @@ use error::AppError;
 use event::Event;
 use mind_tree::{
   config::Config,
+  data_file::DataFileStore,
   forest::Forest,
   node::{Node, NodeData},
 };
@@ -45,6 +46,7 @@ struct App {
   config: Config,
   tui_data: TuiData,
   forest: Forest,
+  data_file_store: DataFileStore,
   dirty: bool,
 }
 
@@ -105,6 +107,13 @@ impl App {
         .map_err(AppError::Request)?;
     }
 
+    let data_file_store = DataFileStore::new(
+      config
+        .persistence
+        .data_dir()
+        .ok_or_else(|| AppError::NoDataDir)?,
+    );
+
     // boolean representing when the tree has been modified and requires saving before quitting
     let dirty = false;
 
@@ -112,6 +121,7 @@ impl App {
       config,
       tui_data,
       forest,
+      data_file_store,
       dirty,
     })
   }
@@ -243,7 +253,7 @@ impl App {
     if let Some(node) = self.forest.main_tree().get_node_by_line(id) {
       match node.data() {
         Some(data) => self.open_node_data(&data)?,
-        None => self.request_prompt_node_data()?,
+        None => self.request_prompt_node_data(node)?,
       }
     }
 
@@ -274,13 +284,41 @@ impl App {
     })
   }
 
-  fn request_prompt_node_data(&mut self) -> Result<(), AppError> {
+  fn user_input(&self, title: impl Into<String>) -> Result<Option<String>, AppError> {
+    let (sender, rx) = channel();
+    self.request(Request::UserInput {
+      title: title.into(),
+      sender,
+    })?;
+
+    let input = rx.recv().unwrap();
+    Ok(input)
+  }
+
+  fn request_prompt_node_data(&mut self, node: Node) -> Result<(), AppError> {
     let (sender, rx) = channel();
     self.request(Request::PromptNodeData { sender })?;
 
     // wait for the TUI to reply with something
-    if let Ok(resp) = rx.recv() {
-      log::info!("user wants to create {resp:?}");
+    if let Ok(Some(item)) = rx.recv() {
+      log::info!("user wants to create {item:?}");
+
+      if item.name == "file" {
+        let path = self.data_file_store.create_data_file(
+          node.name(),
+          self.config.ui.extension.as_deref().unwrap_or(".md"),
+          "",
+        )?;
+        node.set_data(NodeData::File(path.clone()))?;
+        self.open_node_file(&path)?;
+      } else if item.name == "url" {
+        // TODO: ask for the url to put
+        if let Some(url) = self.user_input("URL:")? {
+          node.set_data(NodeData::Link(url))?;
+        }
+      } else {
+        log::warn!("unknown node data type: {item:?}");
+      }
     }
 
     Ok(())

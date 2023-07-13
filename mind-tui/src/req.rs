@@ -38,6 +38,12 @@ pub enum Request {
     sender: Sender<Option<MenuItem>>,
   },
 
+  /// Input the user.
+  UserInput {
+    title: String,
+    sender: Sender<Option<String>>,
+  },
+
   /// Ask the TUI to open the editor with on the given path.
   OpenEditor { path: PathBuf },
 }

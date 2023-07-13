@@ -170,8 +170,8 @@ impl<'a> Widget for &'a Menu {
 /// A menu item.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct MenuItem {
-  name: String,
-  key: Option<char>,
+  pub name: String,
+  pub key: Option<char>,
 }
 
 impl MenuItem {

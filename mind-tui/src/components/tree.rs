@@ -1,4 +1,4 @@
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use mind_tree::node::{Cursor, Node};
@@ -39,6 +39,8 @@ pub struct TuiTree {
 
   /// Prompt used to ask stuff from the user.
   input_prompt: UserInputPrompt,
+  prompt_sx: Sender<Option<String>>,
+  prompt_rx: Receiver<Option<String>>,
 
   /// Event to be emitted once the input prompt is entered.
   ///
@@ -49,6 +51,7 @@ pub struct TuiTree {
 impl TuiTree {
   pub fn new(rect: Rect, event_sx: Sender<Event>, root: Node) -> Self {
     let node_cursor = Cursor::new(root.clone());
+    let (prompt_sx, prompt_rx) = channel();
 
     Self {
       rect,
@@ -58,6 +61,8 @@ impl TuiTree {
       cursor: node_cursor,
       top_shift: 0,
       input_prompt: UserInputPrompt::default(),
+      prompt_sx,
+      prompt_rx,
       input_pending_event: None,
     }
   }
@@ -117,7 +122,9 @@ impl TuiTree {
   }
 
   fn open_prompt_insert_node(&mut self, title: &str, mode: InsertMode) {
-    self.input_prompt.show_with_title(title);
+    self
+      .input_prompt
+      .show_with_title(title, self.prompt_sx.clone());
     self.input_pending_event = Some(Event::InsertNode {
       id: self.selected_node_id,
       mode,
@@ -126,7 +133,9 @@ impl TuiTree {
   }
 
   fn open_prompt_delete_node(&mut self) {
-    self.input_prompt.show_with_title("delete node (y/N):");
+    self
+      .input_prompt
+      .show_with_title("delete node (y/N):", self.prompt_sx.clone());
     self.input_pending_event = Some(Event::DeleteNode {
       id: self.selected_node_id,
     });
@@ -134,18 +143,7 @@ impl TuiTree {
 }
 
 impl<'a> Widget for &'a TuiTree {
-  fn render(self, area: Rect, buf: &mut Buffer) {
-    render_with_indent(
-      &self.root,
-      self.top_shift,
-      0,
-      area,
-      buf,
-      &Indent::default(),
-      false,
-      &self.cursor,
-    );
-
+  fn render(self, mut area: Rect, buf: &mut Buffer) {
     if let Some(prompt) = self.input_prompt.prompt() {
       prompt.render(
         Rect {
@@ -157,7 +155,23 @@ impl<'a> Widget for &'a TuiTree {
       );
 
       // TODO: position the cursor
+
+      // because the prompt is visible, we adapt the tree height
+      if area.height > 0 {
+        area.height -= 1;
+      }
     }
+
+    render_with_indent(
+      &self.root,
+      self.top_shift,
+      0,
+      area,
+      buf,
+      &Indent::default(),
+      false,
+      &self.cursor,
+    );
   }
 }
 
@@ -169,7 +183,9 @@ impl RawEventHandler for TuiTree {
     event: crossterm::event::Event,
   ) -> Result<(HandledEvent, Self::Feedback), AppError> {
     if self.input_prompt.is_visible() {
-      if let (_, Some(input)) = self.input_prompt.react_raw(event)? {
+      self.input_prompt.react_raw(event)?;
+
+      if let Ok(Some(input)) = self.prompt_rx.try_recv() {
         log::info!("user typed: {input}");
 
         if let Some(event) = self

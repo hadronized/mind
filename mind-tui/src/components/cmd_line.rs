@@ -1,4 +1,4 @@
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
@@ -12,6 +12,8 @@ use super::user_input::{InputPrompt, UserInputPrompt};
 #[derive(Debug)]
 pub struct CmdLine {
   input_prompt: UserInputPrompt,
+  prompt_rx: Receiver<Option<String>>,
+  prompt_sx: Sender<Option<String>>,
   event_sx: Sender<Event>,
 }
 
@@ -26,8 +28,11 @@ impl CmdLine {
       "write".to_owned(),
     ]);
 
+    let (prompt_sx, prompt_rx) = channel();
     Self {
       input_prompt,
+      prompt_rx,
+      prompt_sx,
       event_sx,
     }
   }
@@ -45,9 +50,9 @@ impl RawEventHandler for CmdLine {
     event: crossterm::event::Event,
   ) -> Result<(HandledEvent, Self::Feedback), AppError> {
     if self.input_prompt.is_visible() {
-      let (handled, input) = self.input_prompt.react_raw(event)?;
+      let (handled, _) = self.input_prompt.react_raw(event)?;
 
-      if let Some(input) = input {
+      if let Ok(Some(input)) = self.prompt_rx.try_recv() {
         // command line is complete
         let usr_cmd = input.parse()?;
 
@@ -64,7 +69,7 @@ impl RawEventHandler for CmdLine {
       ..
     }) = event
     {
-      self.input_prompt.show();
+      self.input_prompt.show(self.prompt_sx.clone());
       return Ok((HandledEvent::handled(), ()));
     }
 
