@@ -679,6 +679,11 @@ impl Cursor {
     Self { node }
   }
 
+  /// Get access to the underlying [`Node`].
+  pub fn node(&self) -> &Node {
+    &self.node
+  }
+
   /// Check whether the node is expanded.
   pub fn is_expanded(&self) -> bool {
     self.node.inner.read().unwrap().is_expanded
