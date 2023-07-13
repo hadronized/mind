@@ -15,7 +15,6 @@ name = "mind"
 path = "src/main.rs"
 
 [dependencies]
-chrono = "0.4.23"
 clap = { version = "4.1.11", features = ["derive"] }
 colored = "2.0.0"
 mind-tree = { path = "../mind", version = "0.1.2-dev" }
