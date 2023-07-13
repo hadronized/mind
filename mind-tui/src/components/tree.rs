@@ -1,7 +1,7 @@
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crossterm::event::{KeyCode, KeyEvent};
-use mind_tree::node::{Cursor, Node};
+use mind_tree::node::{Cursor, Node, NodeData};
 use tui::{
   buffer::Buffer,
   layout::Rect,
@@ -332,6 +332,13 @@ pub fn render_with_indent(
   cursor: &Cursor,
 ) -> Option<(Rect, u16)> {
   if id >= top_shift {
+    if cursor.points_to(node) {
+      buf.set_style(
+        Rect::new(area.x, area.y, area.width, 1),
+        Style::default().bg(Color::White),
+      );
+    }
+
     // indent guides
     let indent_guides = indent.to_indent_guides(is_last);
     buf.set_string(
@@ -351,8 +358,6 @@ pub fn render_with_indent(
       render_x += arrow.width() as u16;
     }
 
-    let start_x = render_x;
-
     // icon rendering
     let icon = Span::styled(node.icon(), Style::default().fg(Color::Green));
     buf.set_string(render_x, area.y, &icon.content, icon.style);
@@ -361,23 +366,30 @@ pub fn render_with_indent(
     // content rendering
     let text_style = Style::default();
     let text_style = if node.has_children() {
-      text_style.fg(Color::Blue)
-    } else {
-      text_style
-    };
-    let text_style = if node.data().is_some() {
       text_style.add_modifier(Modifier::BOLD)
+    } else if node.data().is_some() {
+      text_style.fg(Color::Magenta)
     } else {
       text_style
     };
     let text = Span::styled(node.name(), text_style);
     buf.set_string(render_x, area.y, &text.content, text.style);
 
-    if cursor.points_to(node) {
-      buf.set_style(
-        Rect::new(start_x, area.y, area.width - start_x, 1),
-        Style::default().bg(Color::Black),
-      );
+    render_x += text.width() as u16;
+
+    // markers; used mainly for data nodes
+    match node.data() {
+      Some(NodeData::File(_)) => {
+        let marker = Span::styled("  ", Style::default().fg(Color::Black));
+        buf.set_string(render_x, area.y, &marker.content, marker.style);
+      }
+
+      Some(NodeData::Link(_)) => {
+        let marker = Span::styled("  ", Style::default().fg(Color::Black));
+        buf.set_string(render_x, area.y, &marker.content, marker.style);
+      }
+
+      _ => (),
     }
   }
 
