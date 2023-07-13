@@ -32,6 +32,9 @@ pub enum Request {
   /// Ask the GUI to adapt to a node deletion.
   DeletedNode { id: usize },
 
+  /// A node was renamed.
+  RenamedNode { id: usize },
+
   /// Ask the TUI to create node data (prompt the user for the menu).
   PromptNodeData {
     // Sender to reply with.

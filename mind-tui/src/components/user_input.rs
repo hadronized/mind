@@ -53,6 +53,10 @@ impl UserInputPrompt {
   pub fn prompt(&self) -> Option<&InputPrompt> {
     self.prompt.as_ref().map(|(prompt, _)| prompt)
   }
+
+  pub fn prompt_mut(&mut self) -> Option<&mut InputPrompt> {
+    self.prompt.as_mut().map(|(prompt, _)| prompt)
+  }
 }
 
 impl RawEventHandler for UserInputPrompt {
@@ -137,6 +141,15 @@ impl Default for InputPrompt {
 }
 
 impl InputPrompt {
+  /// Reset the prompt to a given input.
+  ///
+  /// Can be used to implement a placeholder like feature.
+  pub fn reset(&mut self, input: impl Into<String>) {
+    let input = input.into();
+    self.cursor = input.len();
+    self.input = input;
+  }
+
   fn to_byte_pos(&self, cursor: usize) -> usize {
     self.input.chars().take(cursor).map(char::len_utf8).sum()
   }

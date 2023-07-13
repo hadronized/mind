@@ -63,6 +63,9 @@ pub enum Event {
 
   /// Node data open.
   OpenNodeData { id: usize },
+
+  /// Rename a node.
+  RenameNode { id: usize, rename: String },
 }
 
 impl Event {
@@ -84,6 +87,8 @@ impl Event {
         "y" | "Y" => Some(self),
         _ => None,
       },
+
+      Event::RenameNode { id, .. } => Some(Event::RenameNode { id, rename: input }),
 
       _ => None,
     }

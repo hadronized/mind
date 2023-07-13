@@ -168,6 +168,7 @@ impl App {
         Event::InsertNode { id, mode, name } => self.on_insert_node(id, mode, name)?,
         Event::DeleteNode { id } => self.on_delete_node(id)?,
         Event::OpenNodeData { id } => self.on_open_node_data(id)?,
+        Event::RenameNode { id, rename } => self.on_rename_node(id, rename)?,
       }
     }
 
@@ -240,6 +241,7 @@ impl App {
     if let Some(node) = self.forest.main_tree().get_node_by_line(id) {
       if let Ok(parent) = node.parent() {
         parent.delete(node)?;
+        self.dirty = true;
         self.request(Request::DeletedNode { id })?;
       } else {
         self.request(Request::err_msg("cannot delete root node"))?;
@@ -311,14 +313,30 @@ impl App {
         )?;
         node.set_data(NodeData::File(path.clone()))?;
         self.open_node_file(&path)?;
+        self.dirty = true;
       } else if item.name == "url" {
-        // TODO: ask for the url to put
         if let Some(url) = self.user_input("URL:")? {
           node.set_data(NodeData::Link(url))?;
+          self.dirty = true;
         }
       } else {
         log::warn!("unknown node data type: {item:?}");
       }
+    }
+
+    Ok(())
+  }
+
+  fn on_rename_node(&mut self, id: usize, rename: String) -> Result<(), AppError> {
+    if let Some(node) = self.forest.main_tree().get_node_by_line(id) {
+      log::info!(
+        "renaming node {id} from {name} to {rename}",
+        name = node.name()
+      );
+
+      node.set_name(rename)?;
+      self.dirty = true;
+      self.request(Request::RenamedNode { id })?;
     }
 
     Ok(())

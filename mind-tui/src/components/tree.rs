@@ -140,6 +140,23 @@ impl TuiTree {
       id: self.selected_node_id,
     });
   }
+
+  fn open_prompt_rename_node(&mut self) {
+    self
+      .input_prompt
+      .show_with_title("rename node:", self.prompt_sx.clone());
+
+    // use the current node name as a placeholder
+    if let Some(prompt) = self.input_prompt.prompt_mut() {
+      let name = self.cursor.node().name();
+      prompt.reset(name);
+    }
+
+    self.input_pending_event = Some(Event::RenameNode {
+      id: self.selected_node_id,
+      rename: String::new(),
+    });
+  }
 }
 
 impl<'a> Widget for &'a TuiTree {
@@ -243,6 +260,11 @@ impl RawEventHandler for TuiTree {
           return Ok((HandledEvent::handled(), ()));
         }
 
+        KeyCode::Char('r') => {
+          self.open_prompt_rename_node();
+          return Ok((HandledEvent::handled(), ()));
+        }
+
         // ask to the node; the workflow requires to first emit an event so that the logic checks whether we should
         // open the data directly (if present), or open a menu to ask which kind of data to add
         KeyCode::Enter => {
@@ -332,13 +354,6 @@ pub fn render_with_indent(
   cursor: &Cursor,
 ) -> Option<(Rect, u16)> {
   if id >= top_shift {
-    if cursor.points_to(node) {
-      buf.set_style(
-        Rect::new(area.x, area.y, area.width, 1),
-        Style::default().bg(Color::White),
-      );
-    }
-
     // indent guides
     let indent_guides = indent.to_indent_guides(is_last);
     buf.set_string(
@@ -363,6 +378,8 @@ pub fn render_with_indent(
     buf.set_string(render_x, area.y, &icon.content, icon.style);
     render_x += icon.width() as u16;
 
+    let cursor_start_x = render_x;
+
     // content rendering
     let text_style = Style::default();
     let text_style = if node.has_children() {
@@ -376,6 +393,7 @@ pub fn render_with_indent(
     buf.set_string(render_x, area.y, &text.content, text.style);
 
     render_x += text.width() as u16;
+    let cursor_end_x = render_x;
 
     // markers; used mainly for data nodes
     match node.data() {
@@ -390,6 +408,13 @@ pub fn render_with_indent(
       }
 
       _ => (),
+    }
+
+    if cursor.points_to(node) {
+      buf.set_style(
+        Rect::new(cursor_start_x, area.y, cursor_end_x - cursor_start_x, 1),
+        Style::default().add_modifier(Modifier::REVERSED),
+      );
     }
   }
 

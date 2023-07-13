@@ -47,6 +47,27 @@ pub struct Tui {
 }
 
 impl Tui {
+  /// Allow errors to occur and display them in case of occurrence.
+  pub fn display_errors<T>(&mut self, a: Result<T, AppError>, f: impl FnOnce(T)) {
+    match a {
+      Ok(a) => f(a),
+      Err(err) => self.display_sticky(
+        Span::styled(err.to_string(), Style::default().fg(Color::Red)),
+        Duration::from_secs(5),
+      ),
+    }
+  }
+
+  /// Display a message with a given style and stick it around.
+  ///
+  /// The message will stick around until its timeout time is reached. If a message was still there, it is replaced
+  /// with the new message.
+  fn display_sticky(&mut self, span: impl Into<Span<'static>>, timeout: Duration) {
+    self.sticky_msg = Instant::now()
+      .checked_add(timeout)
+      .map(move |until| StickyMsg::new(span, until));
+  }
+
   pub fn new(
     config: &Config,
     mut tree: TuiTree,
@@ -81,93 +102,26 @@ impl Tui {
     })
   }
 
-  /// Allow errors to occur and display them in case of occurrence.
-  pub fn display_errors<T>(&mut self, a: Result<T, AppError>, f: impl FnOnce(T)) {
-    match a {
-      Ok(a) => f(a),
-      Err(err) => self.display_sticky(
-        Span::styled(err.to_string(), Style::default().fg(Color::Red)),
-        Duration::from_secs(5),
-      ),
-    }
+  /// Open the menu with the provided list of items and send the result on the given channel.
+  fn open_menu(
+    &mut self,
+    title: impl Into<String>,
+    items: impl Into<Vec<MenuItem>>,
+    sender: Sender<Option<MenuItem>>,
+  ) {
+    self.menu.show(title, items, sender);
   }
 
-  pub fn run(mut self) -> Result<(), AppError> {
-    let mut needs_redraw = true;
+  /// Open the prompt with the provided title and send the result on the given channel.
+  fn open_prompt(&mut self, title: impl Into<String>, sender: Sender<Option<String>>) {
+    self.prompt.show_with_title(title, sender);
+  }
 
-    loop {
-      // event available
-      let available_event = crossterm::event::poll(Duration::from_millis(50))
-        .map_err(|e| AppError::Event(e.to_string()))?;
-
-      if available_event {
-        let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
-        let handled_event = self.react_raw(event).map(|(handled, _)| handled);
-
-        self.display_errors(handled_event, |event| {
-          if let HandledEvent::Handled { requires_redraw } = event {
-            needs_redraw |= requires_redraw;
-          }
-        });
-      }
-
-      // check for requests
-      while let Ok(req) = self.request_rx.try_recv() {
-        match req {
-          Request::NewTree(tree) => {
-            self.tree = tree;
-            self.tree.set_area(self.terminal.get_frame().size());
-          }
-
-          Request::StickyMsg { span, timeout } => {
-            self.display_sticky(span, timeout);
-          }
-
-          Request::Quit => return Ok(()),
-
-          Request::InsertedNode { mode, .. } => {
-            if let InsertMode::Before = mode {
-              self.tree.shift_selected_node_id(1);
-            }
-          }
-
-          Request::DeletedNode { .. } => {
-            log::debug!("adapting TUI to deleted node…");
-
-            // the node doesn’t exist anymore, so we try to move to the next node, or to the previous and update the
-            // selected node ID
-            if self.tree.select_next_node() {
-              self.tree.shift_selected_node_id(-1);
-            } else {
-              self.tree.select_prev_node();
-            }
-          }
-
-          Request::PromptNodeData { sender } => {
-            self.open_menu(
-              "create data",
-              [MenuItem::new("file", 'f'), MenuItem::new("url", 'u')],
-              sender,
-            );
-          }
-
-          Request::UserInput { title, sender } => self.open_prompt(title, sender),
-
-          Request::OpenEditor { path } => {
-            self.editor.edit(&path)?;
-            self.terminal.clear().map_err(AppError::TerminalAction)?;
-          }
-        }
-
-        needs_redraw = true;
-      }
-
-      self.refresh();
-
-      // render
-      if needs_redraw {
-        self.render()?;
-        needs_redraw = false;
+  fn refresh(&mut self) {
+    // check whether we should remove sticky messages
+    if let Some(ref mut sticky_msg) = self.sticky_msg {
+      if sticky_msg.until() < Instant::now() {
+        self.sticky_msg = None;
       }
     }
   }
@@ -264,38 +218,89 @@ impl Tui {
       .map_err(AppError::Render)
   }
 
-  fn refresh(&mut self) {
-    // check whether we should remove sticky messages
-    if let Some(ref mut sticky_msg) = self.sticky_msg {
-      if sticky_msg.until() < Instant::now() {
-        self.sticky_msg = None;
+  pub fn run(mut self) -> Result<(), AppError> {
+    let mut needs_redraw = true;
+
+    loop {
+      // event available
+      let available_event = crossterm::event::poll(Duration::from_millis(50))
+        .map_err(|e| AppError::Event(e.to_string()))?;
+
+      if available_event {
+        let event = crossterm::event::read().map_err(AppError::TerminalEvent)?;
+        let handled_event = self.react_raw(event).map(|(handled, _)| handled);
+
+        self.display_errors(handled_event, |event| {
+          if let HandledEvent::Handled { requires_redraw } = event {
+            needs_redraw |= requires_redraw;
+          }
+        });
+      }
+
+      // check for requests
+      while let Ok(req) = self.request_rx.try_recv() {
+        match req {
+          Request::NewTree(tree) => {
+            self.tree = tree;
+            self.tree.set_area(self.terminal.get_frame().size());
+          }
+
+          Request::StickyMsg { span, timeout } => {
+            self.display_sticky(span, timeout);
+          }
+
+          Request::Quit => return Ok(()),
+
+          Request::InsertedNode { mode, .. } => {
+            if let InsertMode::Before = mode {
+              self.tree.shift_selected_node_id(1);
+            }
+          }
+
+          Request::DeletedNode { .. } => {
+            log::debug!("adapting TUI to deleted node…");
+
+            // the node doesn’t exist anymore, so we try to move to the next node, or to the previous and update the
+            // selected node ID
+            if self.tree.select_next_node() {
+              self.tree.shift_selected_node_id(-1);
+            } else {
+              self.tree.select_prev_node();
+            }
+          }
+
+          // HACK: this is a bit hacky… we need that just to ask the TUI to refresh, which is a bit weird
+          Request::RenamedNode { .. } => {
+            log::debug!("adapting TUI to renamed node…");
+          }
+
+          Request::PromptNodeData { sender } => {
+            self.open_menu(
+              "create data",
+              [MenuItem::new("file", 'f'), MenuItem::new("url", 'u')],
+              sender,
+            );
+          }
+
+          Request::UserInput { title, sender } => self.open_prompt(title, sender),
+
+          Request::OpenEditor { path } => {
+            self.editor.edit(&path)?;
+            self.terminal.clear().map_err(AppError::TerminalAction)?;
+          }
+        }
+
+        needs_redraw = true;
+      }
+
+      self.refresh();
+
+      // render
+      if needs_redraw {
+        self.render()?;
+        needs_redraw = false;
       }
     }
-  }
-
-  /// Display a message with a given style and stick it around.
-  ///
-  /// The message will stick around until its timeout time is reached. If a message was still there, it is replaced
-  /// with the new message.
-  fn display_sticky(&mut self, span: impl Into<Span<'static>>, timeout: Duration) {
-    self.sticky_msg = Instant::now()
-      .checked_add(timeout)
-      .map(move |until| StickyMsg::new(span, until));
-  }
-
-  /// Open the prompt with the provided title and send the result on the given channel.
-  fn open_prompt(&mut self, title: impl Into<String>, sender: Sender<Option<String>>) {
-    self.prompt.show_with_title(title, sender);
-  }
-
-  /// Open the menu with the provided list of items and send the result on the given channel.
-  fn open_menu(
-    &mut self,
-    title: impl Into<String>,
-    items: impl Into<Vec<MenuItem>>,
-    sender: Sender<Option<MenuItem>>,
-  ) {
-    self.menu.show(title, items, sender);
   }
 }
 
