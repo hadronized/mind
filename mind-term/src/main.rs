@@ -185,6 +185,8 @@ impl App {
       } => self.run_set_cmd(common_args, data_args, source.as_deref()),
 
       Command::List {} => self.run_ls_cmd(),
+
+      Command::Tui { common_args } => self.run_tui_cmd(common_args),
     }
   }
 
@@ -728,6 +730,13 @@ impl App {
 
     Ok(())
   }
+
+  fn run_tui_cmd(&self, _common_args: &CommonArgs) -> Result<(), PutainDeMerdeError> {
+    std::process::Command::new("mind-tui")
+      .status()
+      .map_err(|err| PutainDeMerdeError::CannotStartTui(err.to_string()))?;
+    Ok(())
+  }
 }
 
 fn main() {
@@ -798,6 +807,9 @@ pub enum PutainDeMerdeError {
 
   #[error("data file store error: {0}")]
   DataFileStoreError(#[from] DataFileStoreError),
+
+  #[error("cannot start TUI; is it installed? (mind-tui): {0}")]
+  CannotStartTui(String),
 }
 
 /// Application tree.
