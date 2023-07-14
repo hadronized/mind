@@ -216,6 +216,12 @@ pub enum Command {
   /// List all the currently known trees.
   #[command(name = "ls")]
   List {},
+
+  /// Run the TUI (mind-tui), if installed.
+  Tui {
+    #[clap(flatten)]
+    common_args: CommonArgs,
+  },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
