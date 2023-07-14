@@ -169,6 +169,7 @@ impl App {
         Event::DeleteNode { id } => self.on_delete_node(id)?,
         Event::OpenNodeData { id } => self.on_open_node_data(id)?,
         Event::RenameNode { id, rename } => self.on_rename_node(id, rename)?,
+        Event::MarkedNode { id } => self.on_marked_node(id)?,
       }
     }
 
@@ -336,9 +337,13 @@ impl App {
 
       node.set_name(rename)?;
       self.dirty = true;
-      self.request(Request::RenamedNode { id })?;
+      self.request(Request::Redraw)?;
     }
 
     Ok(())
+  }
+
+  fn on_marked_node(&mut self, _id: Option<usize>) -> Result<(), AppError> {
+    self.request(Request::Redraw)
   }
 }

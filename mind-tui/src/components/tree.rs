@@ -46,6 +46,11 @@ pub struct TuiTree {
   ///
   /// Can be cancelled if the prompt is aborted.
   input_pending_event: Option<Event>,
+
+  /// Marked node.
+  ///
+  /// Used mainly to move nodes around.
+  marked_node: Option<Node>,
 }
 
 impl TuiTree {
@@ -64,6 +69,7 @@ impl TuiTree {
       prompt_sx,
       prompt_rx,
       input_pending_event: None,
+      marked_node: None,
     }
   }
 
@@ -157,6 +163,18 @@ impl TuiTree {
       rename: String::new(),
     });
   }
+
+  fn mark_current_node(&mut self) -> Result<(), AppError> {
+    self.marked_node = Some(self.cursor.node().clone());
+    self.emit_event(Event::MarkedNode {
+      id: Some(self.selected_node_id),
+    })
+  }
+
+  fn unmark_node(&mut self) -> Result<(), AppError> {
+    self.marked_node = None;
+    self.emit_event(Event::MarkedNode { id: None })
+  }
 }
 
 impl<'a> Widget for &'a TuiTree {
@@ -188,6 +206,7 @@ impl<'a> Widget for &'a TuiTree {
       &Indent::default(),
       false,
       &self.cursor,
+      self.marked_node.as_ref(),
     );
   }
 }
@@ -264,6 +283,14 @@ impl RawEventHandler for TuiTree {
           self.open_prompt_rename_node();
           return Ok((HandledEvent::handled(), ()));
         }
+
+        KeyCode::Char(' ') => match self.marked_node {
+          Some(ref marked) if marked == self.cursor.node() => {
+            self.unmark_node()?;
+          }
+
+          _ => self.mark_current_node()?,
+        },
 
         // ask to the node; the workflow requires to first emit an event so that the logic checks whether we should
         // open the data directly (if present), or open a menu to ask which kind of data to add
@@ -352,6 +379,7 @@ pub fn render_with_indent(
   indent: &Indent,
   is_last: bool,
   cursor: &Cursor,
+  marked: Option<&Node>,
 ) -> Option<(Rect, u16)> {
   if id >= top_shift {
     // indent guides
@@ -410,7 +438,12 @@ pub fn render_with_indent(
       _ => (),
     }
 
-    if cursor.points_to(node) {
+    if marked == Some(node) {
+      buf.set_style(
+        Rect::new(cursor_start_x, area.y, cursor_end_x - cursor_start_x, 1),
+        Style::default().fg(Color::Black).bg(Color::Blue),
+      )
+    } else if cursor.points_to(node) {
       buf.set_style(
         Rect::new(cursor_start_x, area.y, cursor_end_x - cursor_start_x, 1),
         Style::default().add_modifier(Modifier::REVERSED),
@@ -445,6 +478,7 @@ pub fn render_with_indent(
       &new_indent,
       false,
       cursor,
+      marked,
     )?;
 
     area = new_area;
@@ -472,6 +506,7 @@ pub fn render_with_indent(
       &new_indent,
       true,
       cursor,
+      marked,
     )?;
 
     area = new_area;

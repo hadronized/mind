@@ -243,6 +243,7 @@ impl Tui {
           Request::NewTree(tree) => {
             self.tree = tree;
             self.tree.set_area(self.terminal.get_frame().size());
+            needs_redraw = true;
           }
 
           Request::StickyMsg { span, timeout } => {
@@ -255,6 +256,8 @@ impl Tui {
             if let InsertMode::Before = mode {
               self.tree.shift_selected_node_id(1);
             }
+
+            needs_redraw = true;
           }
 
           Request::DeletedNode { .. } => {
@@ -267,11 +270,8 @@ impl Tui {
             } else {
               self.tree.select_prev_node();
             }
-          }
 
-          // HACK: this is a bit hacky… we need that just to ask the TUI to refresh, which is a bit weird
-          Request::RenamedNode { .. } => {
-            log::debug!("adapting TUI to renamed node…");
+            needs_redraw = true;
           }
 
           Request::PromptNodeData { sender } => {
@@ -288,9 +288,11 @@ impl Tui {
             self.editor.edit(&path)?;
             self.terminal.clear().map_err(AppError::TerminalAction)?;
           }
-        }
 
-        needs_redraw = true;
+          Request::Redraw => {
+            needs_redraw = true;
+          }
+        }
       }
 
       self.refresh();

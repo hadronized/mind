@@ -66,6 +66,9 @@ pub enum Event {
 
   /// Rename a node.
   RenameNode { id: usize, rename: String },
+
+  /// Node marked.
+  MarkedNode { id: Option<usize> },
 }
 
 impl Event {
