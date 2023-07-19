@@ -1,3 +1,5 @@
+use mind_tree::node::Node;
+
 use crate::{error::AppError, ops::InsertMode, req::UserCmd};
 
 /// TUI components will react to raw events.
@@ -69,6 +71,13 @@ pub enum Event {
 
   /// Node marked.
   MarkedNode { id: Option<usize> },
+
+  /// Move a node between two nodes.
+  MoveNode {
+    src: Node,
+    dest: Node,
+    mode: InsertMode,
+  },
 }
 
 impl Event {

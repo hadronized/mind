@@ -170,6 +170,7 @@ impl App {
         Event::OpenNodeData { id } => self.on_open_node_data(id)?,
         Event::RenameNode { id, rename } => self.on_rename_node(id, rename)?,
         Event::MarkedNode { id } => self.on_marked_node(id)?,
+        Event::MoveNode { src, dest, mode } => self.on_moved_node(src, dest, mode)?,
       }
     }
 
@@ -345,5 +346,19 @@ impl App {
 
   fn on_marked_node(&mut self, _id: Option<usize>) -> Result<(), AppError> {
     self.request(Request::Redraw)
+  }
+
+  fn on_moved_node(&mut self, src: Node, dest: Node, mode: InsertMode) -> Result<(), AppError> {
+    match mode {
+      InsertMode::InsideTop => dest.move_top(src)?,
+      InsertMode::InsideBottom => dest.move_bottom(src)?,
+      InsertMode::Before => dest.move_before(src)?,
+      InsertMode::After => dest.move_after(src)?,
+    }
+
+    self.dirty = true;
+    self.request(Request::Redraw)?;
+
+    Ok(())
   }
 }

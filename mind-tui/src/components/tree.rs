@@ -175,6 +175,15 @@ impl TuiTree {
     self.marked_node = None;
     self.emit_event(Event::MarkedNode { id: None })
   }
+
+  fn move_node(&mut self, mode: InsertMode) -> Result<(), AppError> {
+    if let Some(dest) = self.marked_node.take() {
+      let src = self.cursor.node().clone();
+      self.emit_event(Event::MoveNode { src, dest, mode })?;
+    }
+
+    Ok(())
+  }
 }
 
 impl<'a> Widget for &'a TuiTree {
@@ -255,23 +264,39 @@ impl RawEventHandler for TuiTree {
         }
 
         KeyCode::Char('o') => {
-          self.open_prompt_insert_node("insert after:", InsertMode::After);
-          return Ok((HandledEvent::handled(), ()));
+          if self.marked_node.is_some() {
+            self.move_node(InsertMode::After)?;
+          } else {
+            self.open_prompt_insert_node("after:", InsertMode::After);
+            return Ok((HandledEvent::handled(), ()));
+          }
         }
 
         KeyCode::Char('O') => {
-          self.open_prompt_insert_node("insert before:", InsertMode::Before);
-          return Ok((HandledEvent::handled(), ()));
+          if self.marked_node.is_some() {
+            self.move_node(InsertMode::Before)?;
+          } else {
+            self.open_prompt_insert_node("before:", InsertMode::Before);
+            return Ok((HandledEvent::handled(), ()));
+          }
         }
 
         KeyCode::Char('i') => {
-          self.open_prompt_insert_node("insert in/bottom:", InsertMode::InsideBottom);
-          return Ok((HandledEvent::handled(), ()));
+          if self.marked_node.is_some() {
+            self.move_node(InsertMode::InsideBottom)?;
+          } else {
+            self.open_prompt_insert_node("in/bottom:", InsertMode::InsideBottom);
+            return Ok((HandledEvent::handled(), ()));
+          }
         }
 
         KeyCode::Char('I') => {
-          self.open_prompt_insert_node("insert in/top:", InsertMode::InsideTop);
-          return Ok((HandledEvent::handled(), ()));
+          if self.marked_node.is_some() {
+            self.move_node(InsertMode::InsideTop)?;
+          } else {
+            self.open_prompt_insert_node("in/top:", InsertMode::InsideTop);
+            return Ok((HandledEvent::handled(), ()));
+          }
         }
 
         KeyCode::Char('d') => {
